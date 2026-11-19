@@ -1,57 +1,63 @@
-"""EcoMove sustainable mobility investigation (COM7021, student ID 25138486).
+# %% [markdown]
+# # EcoMove sustainable mobility investigation (COM7021)
+#
+# **Student ID: 25138486**
+#
+# All analysis for the report, from the raw file to the final figures, in one notebook.
+#
+# - **Part 1 - Analysis walkthrough.** Loads the dataset, checks and prepares it, and runs the statistics quoted in the report. Each "Screenshot" heading matches the screenshot with the same number in the report. Screenshot 19 is the dashboard test run (`test_dashboard.py`), so it is not in this notebook.
+# - **Part 2 - Visualisations.** Builds the exploratory charts and the main report figures, with the supporting statistics (bootstrap confidence intervals, regression tables). Figures are saved to a `figures` folder.
+#
+# **To run:** keep `[5442] EcoMoveMobility.xlsx` (or `EcoMoveMobility.xlsx`) in the same folder as this notebook, install the packages (`pip install pandas numpy scipy statsmodels scikit-posthocs matplotlib openpyxl`) and choose _Restart and Run All_.
+#
+# The script `ecomove_analysis.py` contains exactly the same code in the same order.
 
-Script version of EcoMove_Analysis.ipynb: the same code in the same order.
-Part 1 checks and prepares the data and prints the statistics quoted in the
-report. Part 2 builds the exploratory charts and the main report figures and
-saves them to a 'figures' folder.
+# %% [markdown]
+# # Part 1 - Analysis walkthrough
 
-Run:  python ecomove_analysis.py   (EcoMoveMobility.xlsx in the same folder)
-Needs: pip install pandas numpy scipy statsmodels scikit-posthocs matplotlib openpyxl
-"""
+# %% [markdown]
+# ## Screenshot 1 - Import libraries and load the dataset
+
+# %%
+import sys
+from pathlib import Path
+
 import matplotlib
-
-matplotlib.use("Agg")   # save figures to files instead of opening windows
-
-import pandas as pd
-
-pd.set_option('display.width', 200)        # print tables in full
-pd.set_option('display.max_columns', 30)
-
-try:                     # display() exists in notebooks; in a script, print instead
-    display
-except NameError:
-    display = print
-
-
-# ============================================================================
-# PART 1 - ANALYSIS WALKTHROUGH
-# ============================================================================
-
-# ----------------------------------------------------------------------------
-# Screenshot 1 - Import libraries and load the dataset
-# ----------------------------------------------------------------------------
+if 'ipykernel' not in sys.modules:   # plain script: save figures to files instead of opening windows
+    matplotlib.use('Agg')
 import numpy as np
 import pandas as pd
 from scipy import stats
 import statsmodels.formula.api as smf
 import scikit_posthocs as sp
 
-raw = pd.read_excel('EcoMoveMobility.xlsx')   # supplied dataset
+try:                     # display() exists in notebooks; in a plain script, print instead
+    display
+except NameError:
+    display = print
+
+pd.set_option('display.width', 200)
+pd.set_option('display.max_columns', 30)
+
+# the brief names the file '[5442] EcoMoveMobility.xlsx'; a copy without the prefix also works
+DATA_FILE = next(p for p in ['[5442] EcoMoveMobility.xlsx', 'EcoMoveMobility.xlsx'] if Path(p).exists())
+raw = pd.read_excel(DATA_FILE)
+print('File:', DATA_FILE)
 print('Shape (rows, columns):', raw.shape)
 print('Cities:', raw['City'].nunique(), '| Countries:', raw['Country'].nunique())
 dates = pd.to_datetime(raw['Date'], unit='D', origin='1899-12-30')  # Excel stores dates as serial numbers
 print('Date range:', dates.min().date(), 'to', dates.max().date())
 
+# %% [markdown]
+# ## Screenshot 2 - Column names and data types as loaded
 
-# ----------------------------------------------------------------------------
-# Screenshot 2 - Column names and data types as loaded
-# ----------------------------------------------------------------------------
-print(raw.info())
+# %%
+raw.info()
 
+# %% [markdown]
+# ## Screenshot 3 - Missing, duplicate and out-of-range checks
 
-# ----------------------------------------------------------------------------
-# Screenshot 3 - Missing, duplicate and out-of-range checks
-# ----------------------------------------------------------------------------
+# %%
 print('Missing values:', raw.isna().sum().sum())
 print('Duplicate rows:', raw.duplicated().sum())
 print('Duplicate Record_IDs:', raw['Record_ID'].duplicated().sum())
@@ -59,10 +65,10 @@ print('Negative values:', (raw.select_dtypes('number') < 0).sum().sum())
 print('On-time % outside 0-100:', (~raw['On_Time_Percentage'].between(0, 100)).sum())
 print('Ratings outside 1-5:', (~raw['Customer_Rating'].between(1, 5)).sum())
 
+# %% [markdown]
+# ## Screenshot 4 - Convert dates and text columns
 
-# ----------------------------------------------------------------------------
-# Screenshot 4 - Convert dates and text columns
-# ----------------------------------------------------------------------------
+# %%
 df = raw.copy()
 df['Date'] = dates                                    # converted in Screenshot 1
 for col in ['City', 'Country', 'Transport_Mode', 'Route_Type', 'Weather', 'Event_Day']:
@@ -70,12 +76,12 @@ for col in ['City', 'Country', 'Transport_Mode', 'Route_Type', 'Weather', 'Event
 
 print('Rows kept:', len(df), 'of', len(raw))
 print('Passengers kept:', df['Passengers'].sum(), 'of', raw['Passengers'].sum())
-print(df.info())
+df.info()
 
+# %% [markdown]
+# ## Screenshot 5 - Add derived measures
 
-# ----------------------------------------------------------------------------
-# Screenshot 5 - Add derived measures
-# ----------------------------------------------------------------------------
+# %%
 df['Operating_Surplus_EUR'] = df['Ticket_Revenue_EUR'] - df['Operating_Cost_EUR']
 df['Revenue_Cost_Ratio'] = df['Ticket_Revenue_EUR'] / df['Operating_Cost_EUR']
 df['Complaints_per_10k'] = df['Accessibility_Complaints'] / df['Passengers'] * 10_000
@@ -85,13 +91,13 @@ df['Year'], df['Month'] = df['Date'].dt.year, df['Date'].dt.month
 df['Weekday'] = df['Date'].dt.day_name().str[:3]
 df['Micromobility'] = df['Transport_Mode'].isin(['Bike Share', 'E-Scooter'])
 
-print(df[['Transport_Mode', 'Operating_Surplus_EUR', 'Revenue_Cost_Ratio', 'Complaints_per_10k',
-    'CO2_per_Passenger', 'Cost_per_Passenger']].head().round(2))
+display(df[['Transport_Mode', 'Operating_Surplus_EUR', 'Revenue_Cost_Ratio', 'Complaints_per_10k',
+            'CO2_per_Passenger', 'Cost_per_Passenger']].head().round(2))
 
+# %% [markdown]
+# ## Screenshot 6 - The six transport modes
 
-# ----------------------------------------------------------------------------
-# Screenshot 6 - The six transport modes
-# ----------------------------------------------------------------------------
+# %%
 modes = df.groupby('Transport_Mode', observed=True).agg(Records=('Passengers', 'size'),
                                                         Total_passengers=('Passengers', 'sum'),
                                                         Mean_per_record=('Passengers', 'mean'))
@@ -100,12 +106,12 @@ modes['% of passengers'] = 100 * modes['Total_passengers'] / df['Passengers'].su
 modes['Group'] = np.where(modes.index.isin(['Bike Share', 'E-Scooter']), 'Micromobility', 'Mass transit')
 print(f"Mean passengers per record, largest / smallest mode: "
       f"{modes['Mean_per_record'].max() / modes['Mean_per_record'].min():.0f} times")
-print(modes.sort_values('Total_passengers', ascending=False).round(1))
+display(modes.sort_values('Total_passengers', ascending=False).round(1))
 
+# %% [markdown]
+# ## Screenshot 7 - Skewness and outliers in volume measures
 
-# ----------------------------------------------------------------------------
-# Screenshot 7 - Skewness and outliers in volume measures
-# ----------------------------------------------------------------------------
+# %%
 volume = ['Passengers', 'Trips', 'Ticket_Revenue_EUR', 'Operating_Cost_EUR',
           'CO2_Saved_KG', 'Energy_Consumption_KWh', 'Accessibility_Complaints']
 
@@ -121,83 +127,123 @@ for col in volume:
     rows.append({'Variable': col, 'Skewness': df[col].skew(), 'IQR outliers %': 100 * flag.mean(),
                  'Main mode': f'{main.index[0]} ({main.iloc[0]:.0%})',
                  'Within-mode outliers %': 100 * within.mean()})
-print(pd.DataFrame(rows).set_index('Variable').round(2))
+display(pd.DataFrame(rows).set_index('Variable').round(2))
 
+# %% [markdown]
+# ## Screenshot 8 - Records and passengers by year
 
-# ----------------------------------------------------------------------------
-# Screenshot 8 - Yearly totals versus per-record means
-# ----------------------------------------------------------------------------
+# %%
 yearly = df.groupby('Year').agg(Records=('Passengers', 'size'),
                                 Total_passengers=('Passengers', 'sum'),
                                 Mean_per_record=('Passengers', 'mean'))
 yearly.loc['% change'] = 100 * (yearly.loc[2025] / yearly.loc[2024] - 1)
-print(yearly.round(2))
+display(yearly.round(2))
 
+# %% [markdown]
+# ## Screenshot 9 - Mode effect, Trips definition and weather labels
 
-# ----------------------------------------------------------------------------
-# Screenshot 9 - Mode effect, Trips definition and snow plausibility
-# ----------------------------------------------------------------------------
+# %%
 H, p = stats.kruskal(*[g['Passengers'] for _, g in df.groupby('Transport_Mode', observed=True)])
 print(f'Passengers by mode: Kruskal-Wallis H = {H:,.0f}, epsilon-squared = {H / (len(df) - 1):.2f}')
 
 micro = df[df['Micromobility']]
 print(f"Micromobility records with Trips == Passengers: {(micro['Trips'] == micro['Passengers']).mean():.0%}")
 
-snow = df[df['Weather'] == 'Snow']
+# does the weather follow the seasons? (chi-square test of weather type against month)
+table = pd.crosstab(df['Weather'], df['Month'])
+chi = stats.chi2_contingency(table)
+cramers_v = np.sqrt(chi.statistic / (table.values.sum() * (min(table.shape) - 1)))
+print(f'Weather vs month: chi-square p = {chi.pvalue:.2f}, Cramer\'s V = {cramers_v:.2f}')
+snow, heat = df[df['Weather'] == 'Snow'], df[df['Weather'] == 'Heatwave']
 print(f"Snow records in April-October: {snow['Month'].between(4, 10).mean():.0%} of {len(snow)}")
+print(f"Snow records in June-August: {snow['Month'].isin([6, 7, 8]).sum()}")
+print(f"Heatwave records in December-February: {heat['Month'].isin([12, 1, 2]).sum()} of {len(heat)}")
 
+# %% [markdown]
+# ## Screenshot 10 - Are the data bell-shaped, and is the spread similar across modes?
 
-# ----------------------------------------------------------------------------
-# Screenshot 10 - Normality and equal-variance checks
-# ----------------------------------------------------------------------------
+# %%
 rows = []
 for col in ['Passengers', 'Average_Delay_Minutes', 'Customer_Rating']:
     groups = [g[col] for _, g in df.groupby('Transport_Mode', observed=True)]
     sds = [g.std() for g in groups]
     rows.append({'Variable': col,
-                 'Modes failing normality': f"{sum(stats.normaltest(g).pvalue < 0.05 for g in groups)} of 6",
-                 'Brown-Forsythe p': stats.levene(*groups, center='median').pvalue,
-                 'Largest / smallest SD': max(sds) / min(sds)})
-print(pd.DataFrame(rows).set_index('Variable').round(3))
+                 # normality test per mode: p < 0.05 means the data are not bell-shaped
+                 'Modes not bell-shaped': f"{sum(stats.normaltest(g).pvalue < 0.05 for g in groups)} of 6",
+                 # Brown-Forsythe test: p < 0.05 means the spread differs between modes
+                 'Equal-spread test p': stats.levene(*groups, center='median').pvalue,
+                 # widest standard deviation divided by the narrowest
+                 'Widest / narrowest spread': max(sds) / min(sds)})
+display(pd.DataFrame(rows).set_index('Variable').round(3))
 
+# %% [markdown]
+# ## Screenshot 11 - Demand model: month, weekday, event, route type and weather
+#
+# Passengers are modelled on a log scale, so each effect is a percentage change, holding the other factors fixed.
 
-# ----------------------------------------------------------------------------
-# Screenshot 11 - Demand model: month, weekday and event effects
-# ----------------------------------------------------------------------------
+# %%
 controls = ("C(Transport_Mode, Treatment('Bus')) + C(Route_Type, Treatment('Central Route')) "
             "+ C(Weather, Treatment('Clear')) + C(Event_Day) + C(Month) + C(Weekday, Treatment('Mon'))")
 demand_model = smf.ols(f'np.log(Passengers) ~ {controls} + C(City)', data=df).fit(cov_type='HC3')
 
-terms = {'April vs January': 'C(Month)[T.4]', 'October vs January': 'C(Month)[T.10]',
-         'Saturday vs Monday': "C(Weekday, Treatment('Mon'))[T.Sat]",
-         'Sunday vs Monday': "C(Weekday, Treatment('Mon'))[T.Sun]", 'Event day': 'C(Event_Day)[T.Yes]'}
+def term_label(t):   # readable names for model terms, e.g. 'Snow' instead of C(Weather...)[T.Snow]
+    return 'Event day' if 'Event_Day' in t else t.split('[T.')[-1].rstrip(']')
+
+terms = ["C(Month)[T.4]", "C(Month)[T.10]", "C(Weekday, Treatment('Mon'))[T.Sat]",
+         "C(Weekday, Treatment('Mon'))[T.Sun]", "C(Event_Day)[T.Yes]"]
+terms += [t for t in demand_model.params.index if 'Route_Type' in t or 'Weather' in t]
+names = {'4': 'April (vs January)', '10': 'October (vs January)', 'Sat': 'Saturday (vs Monday)',
+         'Sun': 'Sunday (vs Monday)'}
 ci = demand_model.conf_int()
-print(pd.DataFrame({'% effect': [100 * (np.exp(demand_model.params[t]) - 1) for t in terms.values()],
-              '95% CI low': [100 * (np.exp(ci.loc[t, 0]) - 1) for t in terms.values()],
-              '95% CI high': [100 * (np.exp(ci.loc[t, 1]) - 1) for t in terms.values()]},
-             index=terms.keys()).round(1))
+effects = pd.DataFrame({'% effect': 100 * (np.exp(demand_model.params[terms]) - 1),
+                        '95% CI low': 100 * (np.exp(ci.loc[terms, 0]) - 1),
+                        '95% CI high': 100 * (np.exp(ci.loc[terms, 1]) - 1)})
+effects.index = [names.get(term_label(t), term_label(t)) for t in terms]
+print('Route types compared with Central Route; weather compared with Clear')
+display(effects.round(1))
 
+# %% [markdown]
+# ## Screenshot 12 - City and country demand index, adjusted for service mix
 
-# ----------------------------------------------------------------------------
-# Screenshot 12 - City demand index, unadjusted and adjusted for service mix
-# ----------------------------------------------------------------------------
+# %%
 # controls: the model terms defined in Screenshot 11
 mix_model = smf.ols(f'np.log(Passengers) ~ {controls}', data=df).fit()   # same model, no city
 df['Expected'] = np.exp(mix_model.fittedvalues) * np.mean(np.exp(mix_model.resid))
 
-city = df.groupby('City', observed=True).agg(Observed=('Passengers', 'sum'),
-                                             Expected=('Expected', 'sum'),
-                                             Mean=('Passengers', 'mean'))
+city = df.groupby('City', observed=True).agg(Country=('Country', 'first'), Observed=('Passengers', 'sum'),
+                                             Expected=('Expected', 'sum'), Mean=('Passengers', 'mean'))
 city['Unadjusted index'] = city['Mean'] / df['Passengers'].mean()
 city['Adjusted index'] = city['Observed'] / city['Expected']
-ontime = df.groupby('City', observed=True)['On_Time_Percentage'].mean()
-print(f'On-time % across cities: {ontime.min():.1f} to {ontime.max():.1f}')
-print(city[['Unadjusted index', 'Adjusted index']].sort_values('Adjusted index', ascending=False).round(2))
+display(city[['Country', 'Unadjusted index', 'Adjusted index']]
+        .sort_values('Adjusted index', ascending=False).round(2))
 
+country = df.groupby('Country', observed=True)[['Passengers', 'Expected']].sum()
+print('Country index (observed / expected):')
+display((country['Passengers'] / country['Expected']).sort_values(ascending=False).round(2).to_frame('Adjusted index').T)
 
-# ----------------------------------------------------------------------------
-# Screenshot 13 - Decision measures: pooled versus within-mode correlations
-# ----------------------------------------------------------------------------
+# %% [markdown]
+# ## Screenshot 13 - Country comparison of service measures
+
+# %%
+g = df.groupby('Country', observed=True)
+countries = pd.DataFrame({'Records': g.size(),
+                          'Mean delay (min)': g['Average_Delay_Minutes'].mean(),
+                          'On-time %': g['On_Time_Percentage'].mean(),
+                          'Mean rating': g['Customer_Rating'].mean(),
+                          'Revenue / cost': g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum(),
+                          'Complaints per 10k': 10_000 * g['Accessibility_Complaints'].sum() / g['Passengers'].sum()})
+display(countries.round(2))
+
+# does country affect delay once mode, route, weather, event and calendar are allowed for?
+country_delay = smf.ols(f'Average_Delay_Minutes ~ {controls} + C(Country)', data=df).fit(cov_type='HC3')
+idx = [i for i, n in enumerate(country_delay.params.index) if n.startswith('C(Country)')]
+p = country_delay.wald_test(np.eye(len(country_delay.params))[idx], scalar=True).pvalue
+print(f'Country effect on delay, after adjustment: p = {p:.2f}')
+
+# %% [markdown]
+# ## Screenshot 14 - Decision measures: pooled versus within-mode correlations
+
+# %%
 totals = ['Passengers', 'Ticket_Revenue_EUR', 'Operating_Cost_EUR', 'CO2_Saved_KG', 'Energy_Consumption_KWh']
 r = df[totals].corr(method='spearman').values[np.triu_indices(5, 1)]
 print(f'Excluded - volume totals: rho {r.min():.2f} to {r.max():.2f}')
@@ -211,15 +257,12 @@ for i, a in enumerate(decision):
         within = [g[a].corr(g[b], method='spearman') for _, g in df.groupby('Transport_Mode', observed=True)]
         rows.append({'Pair': f'{a} vs {b}', 'Pooled rho': df[a].corr(df[b], method='spearman'),
                      'Within-mode min': min(within), 'Within-mode max': max(within)})
-print(pd.DataFrame(rows).set_index('Pair').round(2) + 0.0)   # + 0.0 avoids printing -0.00
+display(pd.DataFrame(rows).set_index('Pair').round(2) + 0.0)   # + 0.0 avoids printing -0.00
 
+# %% [markdown]
+# ## Screenshot 15 - Weather and event effects on delay
 
-# ----------------------------------------------------------------------------
-# Screenshot 14 - Weather and event effects on delay
-# ----------------------------------------------------------------------------
-def term_label(t):   # readable names for model terms, e.g. 'Snow' instead of C(Weather...)[T.Snow]
-    return 'Event day' if 'Event_Day' in t else t.split('[T.')[-1].rstrip(']')
-
+# %%
 delay_model = smf.ols(f'Average_Delay_Minutes ~ {controls} + C(City)', data=df).fit(cov_type='HC3')  # controls: Screenshot 11
 effects = [t for t in delay_model.params.index if 'Weather' in t or 'Event_Day' in t]
 table = pd.concat([delay_model.params[effects].rename('Extra minutes vs clear / non-event'),
@@ -239,27 +282,38 @@ dunn = sp.posthoc_dunn(df, val_col='Average_Delay_Minutes', group_col='Weather',
 print('Weather pairs not significantly different:',
       [(a, b) for a in dunn.index for b in dunn.columns if a < b and dunn.loc[a, b] >= 0.05])
 
+# %% [markdown]
+# ## Screenshot 16 - Key performance indicators by mode, including energy
 
-# ----------------------------------------------------------------------------
-# Screenshot 15 - Key performance indicators by mode
-# ----------------------------------------------------------------------------
+# %%
 g = df.groupby('Transport_Mode', observed=True)
-print(pd.DataFrame({'Mean delay (min)': g['Average_Delay_Minutes'].mean(),
-              'Mean rating': g['Customer_Rating'].mean(),
-              'Revenue / cost': g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum(),
-              'CO2 per passenger (kg)': g['CO2_Saved_KG'].sum() / g['Passengers'].sum()}).round(2))
+display(pd.DataFrame({'Mean delay (min)': g['Average_Delay_Minutes'].mean(),
+                      'Mean rating': g['Customer_Rating'].mean(),
+                      'Revenue / cost': g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum(),
+                      'Cost per passenger (EUR)': g['Operating_Cost_EUR'].sum() / g['Passengers'].sum(),
+                      'CO2 per passenger (kg)': g['CO2_Saved_KG'].sum() / g['Passengers'].sum(),
+                      'Energy per passenger (kWh)': g['Energy_Consumption_KWh'].sum() / g['Passengers'].sum()}
+                     ).round(3))
 
+# %% [markdown]
+# ## Screenshot 17 - Accessibility complaints per 10,000 passengers
 
-# ----------------------------------------------------------------------------
-# Screenshot 16 - Accessibility complaints per 10,000 passengers
-# ----------------------------------------------------------------------------
+# %%
 t = df.groupby(['Route_Type', 'Transport_Mode'], observed=True)[['Accessibility_Complaints', 'Passengers']].sum()
-print((t['Accessibility_Complaints'] / t['Passengers'] * 10_000).unstack().round(1))
+display((t['Accessibility_Complaints'] / t['Passengers'] * 10_000).unstack().round(1))
 
+# a high rate can come from more complaints or from fewer passengers, so look at both per record
+sub = df['Route_Type'].eq('Suburban Feeder').map({True: 'Suburban Feeder', False: 'Other routes'})
+per_record = df.groupby(['Transport_Mode', sub], observed=True).agg(
+    Complaints_per_record=('Accessibility_Complaints', 'mean'), Passengers_per_record=('Passengers', 'mean'))
+display(per_record.unstack().round(1))
+share = df[sub == 'Suburban Feeder'].groupby('Transport_Mode', observed=True)['Accessibility_Complaints'].sum()
+print('Share of all Suburban Feeder complaints:', (100 * share / share.sum()).round(0).to_dict())
 
-# ----------------------------------------------------------------------------
-# Screenshot 17 - Micromobility deficit, CO2 share and cost per tonne
-# ----------------------------------------------------------------------------
+# %% [markdown]
+# ## Screenshot 18 - Micromobility deficit, CO2 share and cost per tonne
+
+# %%
 net_cost = df['Operating_Cost_EUR'] - df['Ticket_Revenue_EUR']
 m = df['Micromobility']                       # flag created in Screenshot 5
 print(f"Network revenue / cost: {df['Ticket_Revenue_EUR'].sum() / df['Operating_Cost_EUR'].sum():.3f}")
@@ -267,88 +321,179 @@ print(f'Micromobility deficit: EUR {net_cost[m].sum() / 1e6:.1f}m')
 print(f'Mass transit surplus: EUR {-net_cost[~m].sum() / 1e6:.1f}m')
 print(f"Micromobility share of passengers: {df.loc[m, 'Passengers'].sum() / df['Passengers'].sum():.1%}")
 print(f"Micromobility share of CO2 saved: {df.loc[m, 'CO2_Saved_KG'].sum() / df['CO2_Saved_KG'].sum():.1%}")
+print(f"Net cost per micromobility passenger: EUR {net_cost[m].sum() / df.loc[m, 'Passengers'].sum():.2f}")
 print(f"Net cost per tonne of CO2 saved: EUR {net_cost[m].sum() / (df.loc[m, 'CO2_Saved_KG'].sum() / 1000):,.0f}")
 
+# %% [markdown]
+# ## Screenshot 20 - Event-day passenger uplift by mode
+#
+# (Screenshot 19 is the dashboard test run, from `test_dashboard.py`.)
 
-# ----------------------------------------------------------------------------
-# Screenshot 19 - Event-day passenger uplift by mode
-# ----------------------------------------------------------------------------
+# %%
 # mean passengers per record on event ('Yes') and other ('No') days, by mode
 ev = df.groupby(['Transport_Mode', 'Event_Day'], observed=True)['Passengers'].mean().unstack()
-print((100 * (ev['Yes'] / ev['No'] - 1)).round(1).rename('Passenger uplift (%)').to_frame().T)
+display((100 * (ev['Yes'] / ev['No'] - 1)).round(1).rename('Passenger uplift (%)').to_frame().T)
 
+# %% [markdown]
+# ## Screenshot 21 - Cities: demand compared with service quality
 
-# ----------------------------------------------------------------------------
-# Screenshot 20 - Loss-making records by mode
-# ----------------------------------------------------------------------------
+# %%
+# adjusted demand index from Screenshot 12, next to raw service measures for each city
+g = df.groupby('City', observed=True)
+cities = pd.DataFrame({'Country': g['Country'].first(),
+                       'Demand index (adjusted)': city['Adjusted index'],
+                       'Mean delay (min)': g['Average_Delay_Minutes'].mean(),
+                       'On-time %': g['On_Time_Percentage'].mean(),
+                       'Mean rating': g['Customer_Rating'].mean(),
+                       'Revenue / cost': g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum(),
+                       'Complaints per 10k': 10_000 * g['Accessibility_Complaints'].sum() / g['Passengers'].sum()})
+display(cities.sort_values('Demand index (adjusted)', ascending=False).round(2))
+
+# how much each measure varies between cities: highest city compared with lowest city
+measures = cities.drop(columns='Country')
+gap = 100 * (measures.max() / measures.min() - 1)
+print('Gap between the highest and lowest city (%):')
+display(gap.round(1).to_frame('Gap (%)').T)
+
+# %% [markdown]
+# ## Screenshot 22 - Mean delay on event and non-event days by mode
+
+# %%
+# mean delay per record on event ('Yes') and other ('No') days, by mode
+from statsmodels.stats.multitest import multipletests
+
+rows = {}
+for mode, g in df.groupby('Transport_Mode', observed=True):
+    event = g.loc[g['Event_Day'] == 'Yes', 'Average_Delay_Minutes']
+    other = g.loc[g['Event_Day'] == 'No', 'Average_Delay_Minutes']
+    rows[mode] = {'Event records': len(event),
+                  'Non-event day (min)': other.mean(),
+                  'Event day (min)': event.mean(),
+                  'Extra minutes': event.mean() - other.mean(),
+                  # Mann-Whitney U test: are delays on event days higher or lower than on other days?
+                  'p': stats.mannwhitneyu(event, other, alternative='two-sided').pvalue}
+order = ['Metro', 'Tram', 'Bus', 'Park and Ride', 'Bike Share', 'E-Scooter']        # same order as Figure 28
+event_delay = pd.DataFrame(rows).T.reindex(order)
+holm = multipletests(event_delay['p'].astype(float), method='holm')[1]               # 6 tests, one per mode
+event_delay['p (Holm-adjusted)'] = ['< 0.001' if q < 0.001 else f'{q:.3f}' for q in holm]
+display(event_delay.drop(columns='p').astype({'Event records': int, 'Non-event day (min)': float,
+                                              'Event day (min)': float, 'Extra minutes': float}).round(2))
+
+is_event = df['Event_Day'] == 'Yes'
+print(f"All records: {df.loc[~is_event, 'Average_Delay_Minutes'].mean():.2f} min on other days, "
+      f"{df.loc[is_event, 'Average_Delay_Minutes'].mean():.2f} min on event days")
+event_term = [t for t in delay_model.params.index if 'Event_Day' in t][0]          # delay model, Screenshot 15
+print(f"With other factors held fixed (delay model): event days add {delay_model.params[event_term]:.2f} min "
+      f"(95% CI {delay_model.conf_int().loc[event_term, 0]:.2f}-{delay_model.conf_int().loc[event_term, 1]:.2f})")
+
+# %% [markdown]
+# ## Screenshot 23 - Loss-making records by mode
+
+# %%
 df['Loss_making'] = df['Operating_Surplus_EUR'] < 0   # surplus created in Screenshot 5
 print(f"Loss-making records: {df['Loss_making'].mean():.0%} of {len(df):,}")
-print((100 * df.groupby('Transport_Mode', observed=True)['Loss_making'].mean()).round(0).rename('% loss-making').to_frame().T)
+display((100 * df.groupby('Transport_Mode', observed=True)['Loss_making'].mean()).round(0)
+        .rename('% loss-making').to_frame().T)
 
+# %% [markdown]
+# ## Screenshot 24 - Rating model: delay, mode and weather
 
-# ----------------------------------------------------------------------------
-# Screenshot 21 - Rating model: delay, mode and weather
-# ----------------------------------------------------------------------------
+# %%
 rating_model = smf.ols("Customer_Rating ~ Average_Delay_Minutes + C(Transport_Mode, Treatment('Bus')) "
                        "+ C(Weather, Treatment('Clear')) + C(Event_Day)", data=df).fit(cov_type='HC3')
 mode_terms = [t for t in rating_model.params.index if 'Transport_Mode' in t]
 print(f'Mode terms after controlling for delay: smallest p = {rating_model.pvalues[mode_terms].min():.2f}')
 show = ['Average_Delay_Minutes'] + [t for t in rating_model.params.index if any(w in t for w in ['Rain', 'Heatwave', 'Snow'])]
-print(pd.concat([rating_model.params[show].rename('Change in rating'), rating_model.pvalues[show].rename('p')],
-          axis=1).rename(index=term_label).round(3))   # term_label defined in Screenshot 14
+display(pd.concat([rating_model.params[show].rename('Change in rating'), rating_model.pvalues[show].rename('p')],
+                  axis=1).rename(index=term_label).round(3))   # term_label defined in Screenshot 11
 
+# %% [markdown]
+# ## Screenshot 25 - Sustainability: CO2 saved by mode
 
-# ----------------------------------------------------------------------------
-# Screenshot 22 - What each recommendation could deliver (scenarios, not forecasts)
-# ----------------------------------------------------------------------------
-# Each line asks: IF the target is met, what would it be worth according to this dataset?
-slope = rating_model.params['Average_Delay_Minutes']        # rating change per minute of delay (Screenshot 21)
-effect = lambda word: delay_model.params[[t for t in delay_model.params.index if word in t][0]]   # Screenshot 14
+# %%
+g = df.groupby('Transport_Mode', observed=True)
+co2 = pd.DataFrame({'CO2 saved (tonnes)': g['CO2_Saved_KG'].sum() / 1000,
+                    'Share of all CO2 saved (%)': 100 * g['CO2_Saved_KG'].sum() / df['CO2_Saved_KG'].sum(),
+                    'CO2 saved per passenger (kg)': g['CO2_Saved_KG'].sum() / g['Passengers'].sum(),
+                    'Revenue / cost': g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum(),
+                    'Operating surplus (EUR m)': g['Operating_Surplus_EUR'].sum() / 1e6})   # surplus: Screenshot 5
+display(co2.reindex(['Metro', 'Tram', 'Bus', 'Park and Ride', 'Bike Share', 'E-Scooter']).round(3))
+
+# %% [markdown]
+# ## Screenshot 26 - Evidence for each recommendation, with scenarios (not forecasts)
+#
+# For each recommendation: the facts it rests on, then a scenario that asks IF the target were reached, what would it be worth in this dataset? Scenarios are not predictions of what an action will achieve.
+
+# %%
+slope = rating_model.params['Average_Delay_Minutes']        # rating change per minute of delay (Screenshot 24)
+effect = lambda word: delay_model.params[[t for t in delay_model.params.index if word in t][0]]   # Screenshot 15
 delay = df.groupby('Transport_Mode', observed=True)['Average_Delay_Minutes'].mean()
+rating = df.groupby('Transport_Mode', observed=True)['Customer_Rating'].mean()
 mean_delay = lambda mask: df.loc[mask, 'Average_Delay_Minutes'].mean()
 
-gap = delay['Bus'] - delay['Tram']                           # R1: Bus delay down to Tram's level
+print('R1  Improve service reliability (bus priority, weather schedules, event-day capacity)')
+print(f"    Evidence: Bus delay {delay['Bus']:.1f} min vs network {df['Average_Delay_Minutes'].mean():.1f}; "
+      f"Bus rating {rating['Bus']:.2f} (lowest); rating {slope:+.2f} per extra minute of delay")
+print(f"    Evidence: adjusted extra delay - snow +{effect('Snow'):.2f}, rain +{effect('Rain'):.2f}, "
+      f"event day +{effect('Event'):.2f} min")
+gap = delay['Bus'] - delay['Tram']                           # Bus delay down to Tram's level
 bus_share = (df['Transport_Mode'] == 'Bus').mean()
-print(f"R1  Bus delay -{gap / delay['Bus']:.0%}, Bus rating +{-slope * gap:.2f}, "
+print(f"    Scenario: Bus delay at Tram's level -> Bus delay -{gap / delay['Bus']:.0%}, "
       f"network delay -{bus_share * gap / df['Average_Delay_Minutes'].mean():.0%}")
+print(f"    Scenario: half the weather delay removed -> "
+      f"-{effect('Snow') / 2 / mean_delay(df['Weather'] == 'Snow'):.0%} on snow days, "
+      f"-{effect('Rain') / 2 / mean_delay(df['Weather'] == 'Rain'):.0%} on rain days")
+print(f"    Scenario: event-day delay penalty removed -> "
+      f"-{effect('Event') / mean_delay(df['Event_Day'] == 'Yes'):.0%} on event days")
 
-snow, rain = effect('Snow') / 2, effect('Rain') / 2          # R2: half of the weather penalty removed
-print(f"R2  delay -{snow / mean_delay(df['Weather'] == 'Snow'):.0%} on snow days, "
-      f"-{rain / mean_delay(df['Weather'] == 'Rain'):.0%} on rain days")
-
-print(f"R3  event-day delay -{effect('Event') / mean_delay(df['Event_Day'] == 'Yes'):.0%}")   # event penalty removed
-
-sub, avoided = df['Route_Type'] == 'Suburban Feeder', 0      # R4: suburban rates fall to the same mode's rate elsewhere
-for mode in ['Bike Share', 'E-Scooter', 'Bus']:
-    here, other = df[sub & (df['Transport_Mode'] == mode)], df[~sub & (df['Transport_Mode'] == mode)]
+print('R2  Address accessibility on Suburban Feeder routes')
+sub_route, avoided = df['Route_Type'] == 'Suburban Feeder', 0
+for mode in ['Bike Share', 'E-Scooter']:
+    here = df[sub_route & (df['Transport_Mode'] == mode)]
+    other = df[~sub_route & (df['Transport_Mode'] == mode)]
+    here_rate = here['Accessibility_Complaints'].sum() / here['Passengers'].sum()
     other_rate = other['Accessibility_Complaints'].sum() / other['Passengers'].sum()
+    print(f"    Evidence: {mode} {1e4 * here_rate:.1f} complaints per 10k on Suburban Feeder vs "
+          f"{1e4 * other_rate:.1f} elsewhere ({here_rate / other_rate:.1f}x)")
     avoided += here['Accessibility_Complaints'].sum() - other_rate * here['Passengers'].sum()
-print(f"R4  {avoided:.0f} fewer complaints = {avoided / df.loc[sub, 'Accessibility_Complaints'].sum():.0%} "
-      f"of Suburban Feeder complaints")
+metro_share = (df.loc[sub_route & (df['Transport_Mode'] == 'Metro'), 'Accessibility_Complaints'].sum()
+               / df.loc[sub_route, 'Accessibility_Complaints'].sum())
+print(f"    Evidence: Metro makes {metro_share:.0%} of Suburban Feeder complaints (most passengers)")
+print(f"    Scenario: micromobility rates as on other routes -> about {avoided:.0f} fewer complaints")
 
-print(f"R5  adjusted demand index: Berlin {city.loc['Berlin', 'Adjusted index']:.2f}, "
-      f"Paris {city.loc['Paris', 'Adjusted index']:.2f}")       # city index from Screenshot 12
+print('R3  Use the adjusted city demand index to guide investment')
+print(f"    Evidence: adjusted index - Paris {city.loc['Paris', 'Adjusted index']:.2f}, "
+      f"Berlin {city.loc['Berlin', 'Adjusted index']:.2f}, Rotterdam {city.loc['Rotterdam', 'Adjusted index']:.2f}, "
+      f"Lyon {city.loc['Lyon', 'Adjusted index']:.2f} (1.00 = as expected)")
+idx = [i for i, n in enumerate(delay_model.params.index) if n.startswith('C(City)')]
+p_city = delay_model.wald_test(np.eye(len(delay_model.params))[idx], scalar=True).pvalue
+print(f"    Evidence: city effect on delay after adjustment p = {p_city:.2f} (service quality similar)")
 
-micro = df['Micromobility']                                  # R6: micromobility operating cost cut by 10%
-saving = 0.10 * df.loc[micro, 'Operating_Cost_EUR'].sum()
-deficit = (df.loc[micro, 'Operating_Cost_EUR'] - df.loc[micro, 'Ticket_Revenue_EUR']).sum()
+print('R4  Reassess micromobility\'s financial and environmental contribution')
+m = df['Micromobility']
+g = df[m].groupby('Transport_Mode', observed=True)
+rc = g['Ticket_Revenue_EUR'].sum() / g['Operating_Cost_EUR'].sum()
+co2pp = g['CO2_Saved_KG'].sum() / g['Passengers'].sum()
+deficit = (df.loc[m, 'Operating_Cost_EUR'] - df.loc[m, 'Ticket_Revenue_EUR']).sum()
+print(f"    Evidence: cost recovery {rc.min():.0%}-{rc.max():.0%}; operating surplus EUR {-deficit / 1e6:.1f}m "
+      f"(mass transit EUR {df.loc[~m, 'Operating_Surplus_EUR'].sum() / 1e6:+.1f}m)")
+print(f"    Evidence: CO2 saved per passenger {co2pp.min():.2f}-{co2pp.max():.2f} kg "
+      f"(mass transit {(df.loc[~m, 'CO2_Saved_KG'].sum() / df.loc[~m, 'Passengers'].sum()):.2f} kg); "
+      f"{df.loc[m, 'CO2_Saved_KG'].sum() / df['CO2_Saved_KG'].sum():.1%} of all CO2 saved")
+saving = 0.10 * df.loc[m, 'Operating_Cost_EUR'].sum()
 revenue, cost = df['Ticket_Revenue_EUR'].sum(), df['Operating_Cost_EUR'].sum()
-print(f"R6  saves EUR {saving / 1e6:.2f}m = {saving / deficit:.0%} of the deficit; "
+print(f"    Scenario: micromobility costs 10% lower -> saves EUR {saving / 1e6:.2f}m; "
       f"network revenue/cost {revenue / cost:.3f} -> {revenue / (cost - saving):.3f}")
 
+# %% [markdown]
+# # Part 2 - Visualisations
+#
+# Part 2 reuses `raw` from Part 1. The charts need fixed category orders (for example weather from Clear to Snow) and one colour per transport mode, so this part defines those settings once, prepares a plotting copy of the data called `data`, and then builds each chart with a function that is defined directly above the code that uses it.
 
-# ============================================================================
-# PART 2 - VISUALISATIONS
-# ============================================================================
-# Part 2 reuses raw from Part 1. The charts need fixed category orders (for
-# example weather from Clear to Snow) and one colour per transport mode, so
-# this part defines those settings once, prepares a plotting copy of the data
-# called data, and then builds each chart with a function that is defined
-# directly above the code that uses it.
+# %% [markdown]
+# ## 2.1 Settings: column groups, category orders and colours
 
-# ----------------------------------------------------------------------------
-# 2.1 Settings: column groups, category orders and colours
-# ----------------------------------------------------------------------------
+# %%
 import warnings
 from pathlib import Path
 
@@ -360,6 +505,7 @@ from statsmodels.stats.multitest import multipletests
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', message='.*vert: bool.*')        # harmless matplotlib notices
 warnings.filterwarnings('ignore', message='.*tight_layout.*')
+warnings.filterwarnings('ignore', message='.*non-interactive.*')    # plt.show() in a plain script
 pd.set_option('display.width', 200)
 pd.set_option('display.max_columns', 30)
 pd.set_option('display.max_rows', 120)
@@ -479,12 +625,12 @@ HIGHLIGHT = "#D55E00"
 
 BASE = "#0072B2"
 
+# %% [markdown]
+# ## 2.2 Chart style
+#
+# One shared style so all figures look consistent, and a helper that saves each figure.
 
-# ----------------------------------------------------------------------------
-# 2.2 Chart style
-# One shared style so all figures look consistent, and a helper that saves
-# each figure.
-# ----------------------------------------------------------------------------
+# %%
 def apply_style() -> None:
     plt.rcParams.update({
         "figure.dpi": 110,
@@ -521,14 +667,21 @@ def save_figure(fig: plt.Figure, name: str, folder: Path = FIGURE_DIR) -> Path:
     return path
 
 
+def show_figure(fig: plt.Figure, name: str) -> None:
+    """Save the figure, show it in the notebook (no effect in a plain script) and free its memory."""
+    save_figure(fig, name)
+    plt.show()
+    plt.close(fig)
+
+
 apply_style()
 
+# %% [markdown]
+# ## 2.3 Prepare the plotting data
+#
+# Same records as Part 1 (no rows removed): dates converted, categories given a fixed order, and derived measures added.
 
-# ----------------------------------------------------------------------------
-# 2.3 Prepare the plotting data
-# Same records as Part 1 (no rows removed): dates converted, categories given
-# a fixed order, and derived measures added.
-# ----------------------------------------------------------------------------
+# %%
 def convert_dates(series: pd.Series) -> pd.Series:
     """Convert a date column to datetime64.
 
@@ -643,8 +796,8 @@ def add_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     out["CO2_Saved_per_Passenger_KG"] = safe_divide(out["CO2_Saved_KG"], out["Passengers"])
     out["Energy_per_Passenger_KWh"] = safe_divide(out["Energy_Consumption_KWh"], out["Passengers"])
 
-    # Operational. NB: for Bike Share / E-Scooter 'Trips' equals 'Passengers'
-    # (one rental = one trip), so this is only comparable within mass transit.
+    # Operational. For Bike Share / E-Scooter 'Trips' always equals 'Passengers',
+    # which suggests one trip = one rental there, so this is only compared within mass transit.
     out["Passengers_per_Trip"] = safe_divide(out["Passengers"], out["Trips"])
 
     # Grouping and calendar fields
@@ -681,17 +834,18 @@ DERIVED_DEFINITIONS = pd.DataFrame([
     ("Year, Month, Year_Month, Quarter, Weekday, Is_Weekend", "From Date", "Temporal grouping"),
 ], columns=["Variable", "Definition", "Purpose"])
 
+# %%
 prepared, prep_log = prepare_data(raw)
 data = add_derived_features(prepared)
 print(f'{len(data):,} records, {data.shape[1]} columns')
-print(pd.DataFrame(prep_log))
+display(pd.DataFrame(prep_log))
 
+# %% [markdown]
+# ## 2.4 Exploratory charts
+#
+# These charts informed the method (skewed measures, genuine outliers, uneven sampling, implausible weather) and appear in section 1.2 of the report.
 
-# ----------------------------------------------------------------------------
-# 2.4 Exploratory charts
-# These charts informed the method (skewed measures, genuine outliers, uneven
-# sampling, implausible weather) and appear in section 1.2 of the report.
-# ----------------------------------------------------------------------------
+# %%
 def iqr_bounds(s: pd.Series, k: float = 1.5) -> tuple[float, float]:
     """Tukey fences: [Q1 - k*IQR, Q3 + k*IQR]. Distribution-free."""
     q1, q3 = s.quantile([0.25, 0.75])
@@ -703,7 +857,7 @@ def temporal_coverage(df: pd.DataFrame) -> pd.DataFrame:
     """Records, total passengers and mean passengers per record by month.
 
     Shows why monthly *totals* are unsafe: they move with the number of
-    sampled records, whereas the per-record mean does not.
+    records, whereas the per-record mean does not.
     """
     monthly = df.groupby("Year_Month").agg(
         Records=("Record_ID", "size"),
@@ -734,6 +888,7 @@ LABELS = {
     "Customer_Rating": "Customer rating (1-5)", "Accessibility_Complaints": "Accessibility complaints",
 }
 
+# %%
 def plot_numeric_distributions(df: pd.DataFrame) -> plt.Figure:
     """Histogram for every numeric variable, annotated with skewness."""
     cols = NUMERIC_COLS
@@ -762,10 +917,11 @@ def plot_numeric_distributions(df: pd.DataFrame) -> plt.Figure:
     fig.tight_layout()
     return fig
 
+# %%
 fig = plot_numeric_distributions(data)
-save_figure(fig, 'EDA1_numeric_distributions')
-plt.close('all')
+show_figure(fig, 'EDA1_numeric_distributions')
 
+# %%
 def plot_outliers_by_mode(df: pd.DataFrame, col: str = "Passengers") -> plt.Figure:
     """Box plot by mode on a log axis, with the pooled IQR upper fence."""
     fig, ax = plt.subplots(figsize=(9, 4.6))
@@ -792,25 +948,27 @@ def plot_outliers_by_mode(df: pd.DataFrame, col: str = "Passengers") -> plt.Figu
     ax.grid(axis="x", color="#E6E6E6")
     ax.grid(axis="y", visible=False)
     ax.set_xlabel(f"{LABELS[col]} per record (log scale)")
-    ax.set_title("Pooled passenger 'outliers' are all genuine high-volume Metro records, not errors")
+    ax.set_title("Most passenger 'outliers' are busy Metro records, not errors")
     fig.text(0.01, -0.03, "Source: EcoMoveMobility.xlsx. Boxes = IQR, line = median, "
              "whiskers = 1.5 x IQR within mode.", fontsize=8, color=NEUTRAL)
     fig.tight_layout()
     return fig
 
+# %%
 fig = plot_outliers_by_mode(data)
-save_figure(fig, 'EDA2_outliers_by_mode')
-plt.close('all')
+show_figure(fig, 'EDA2_outliers_by_mode')
 
-def plot_sampling_artefact(monthly: pd.DataFrame) -> plt.Figure:
+# %%
+def plot_record_counts(monthly: pd.DataFrame) -> plt.Figure:
     """Records per month and indexed totals vs per-record means (one y-scale per panel)."""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
                                    gridspec_kw={"height_ratios": [1, 1.4]})
     x = monthly.index
     ax1.bar(x, monthly["Records"], width=20, color=LIGHT_NEUTRAL)
     ax1.axhline(monthly["Records"].mean(), color=NEUTRAL, lw=1, ls=":")
-    ax1.set_ylabel("Records sampled")
-    ax1.set_title("(a) The number of records sampled varies by month (188-228)")
+    ax1.set_ylabel("Records")
+    ax1.set_title(f"(a) The number of records varies by month "
+                  f"({monthly['Records'].min()}-{monthly['Records'].max()})")
     ax1.set_ylim(150, 240)
 
     base = monthly.loc[monthly.index.year == 2024]
@@ -830,7 +988,7 @@ def plot_sampling_artefact(monthly: pd.DataFrame) -> plt.Figure:
     ax2.text(x[-1] + pd.Timedelta(days=12), m_y, "Mean per record",
              color=BASE, va="center", fontsize=9)
     ax2.set_ylabel("Index (2024 average = 100)")
-    ax2.set_title("(b) Monthly totals mix demand with sample size; per-record means do not")
+    ax2.set_title("(b) Totals depend on how many records a month has; the mean per record does not")
     ax2.xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator(bymonth=[1, 4, 7, 10]))
     ax2.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter("%b\n%Y"))
     fig.text(0.01, -0.02, "Source: EcoMoveMobility.xlsx. Each panel has its own single y-axis.",
@@ -838,11 +996,12 @@ def plot_sampling_artefact(monthly: pd.DataFrame) -> plt.Figure:
     fig.tight_layout()
     return fig
 
+# %%
 monthly = temporal_coverage(data)
-fig = plot_sampling_artefact(monthly)
-save_figure(fig, 'EDA3_sampling_artefact')
-plt.close('all')
+fig = plot_record_counts(monthly)
+show_figure(fig, 'EDA3_record_counts')
 
+# %%
 def plot_categorical_frequencies(freq: pd.DataFrame) -> plt.Figure:
     """Small multiples of category frequencies (single neutral hue: counts, not identity)."""
     variables = CATEGORICAL_COLS
@@ -865,52 +1024,50 @@ def plot_categorical_frequencies(freq: pd.DataFrame) -> plt.Figure:
     fig.tight_layout()
     return fig
 
+# %%
 freq = categorical_frequency(data)
 fig = plot_categorical_frequencies(freq)
-save_figure(fig, 'EDA4_categorical_frequencies')
-plt.close('all')
+show_figure(fig, 'EDA4_categorical_frequencies')
 
+# %%
 def plot_weather_by_month(df: pd.DataFrame) -> plt.Figure:
-    """Share of each month's records by weather (sequential single hue)."""
-    tab = pd.crosstab(df["Weather"], df["Month"], normalize="columns") * 100
-    tab = tab.reindex(WEATHER_ORDER)
-    fig, ax = plt.subplots(figsize=(10, 3.8))
-    im = ax.imshow(tab.values, cmap="Blues", aspect="auto", vmin=0)
-    ax.set_xticks(range(12), ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
-    ax.set_yticks(range(len(tab)), tab.index)
-    for i in range(tab.shape[0]):
-        for j in range(tab.shape[1]):
-            v = tab.values[i, j]
-            ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=8,
-                    color="white" if v > 25 else "black")
-    ax.grid(False)
-    for s in ax.spines.values():
-        s.set_visible(False)
-    cb = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
-    cb.set_label("% of month's records")
-    ax.set_title("Weather shows no seasonality: snow is recorded in July and August "
-                 "at similar rates to winter")
-    fig.text(0.01, -0.04, "Source: EcoMoveMobility.xlsx. Cells = % of records in that month "
-             "with each weather type (columns sum to 100).", fontsize=8, color=NEUTRAL)
+    """Share of each month's records by weather type (one line per weather type).
+
+    Real weather would follow the seasons (snow in winter, heatwaves in summer);
+    flat lines mean the weather labels do not follow the calendar.
+    """
+    tab = pd.crosstab(df["Month"], df["Weather"], normalize="index").reindex(columns=WEATHER_ORDER) * 100
+    fig, ax = plt.subplots(figsize=(10, 4.2))
+    highlight = {"Snow": BASE, "Heatwave": HIGHLIGHT}
+    for w in WEATHER_ORDER:
+        colour = highlight.get(w, LIGHT_NEUTRAL)
+        ax.plot(tab.index, tab[w], color=colour, lw=2.2 if w in highlight else 1.4, marker="o", ms=3)
+        ax.text(12.25, tab[w].iloc[-1], w, va="center", fontsize=9,
+                color=colour if w in highlight else NEUTRAL)
+    ax.set_xticks(range(1, 13), ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+    ax.set_xlim(0.7, 13.2)
+    ax.set_ylim(0, 50)
+    ax.set_ylabel("% of the month's records")
+    ax.set_title("Weather shares barely change through the year: snow and heatwaves appear in every season")
+    fig.text(0.01, -0.03, "Source: EcoMoveMobility.xlsx. Each line = share of that month's records with "
+             "the weather type (each month sums to 100%). Chi-square test of weather against month: see Screenshot 9.",
+             fontsize=8, color=NEUTRAL)
     fig.tight_layout()
     return fig
 
 fig = plot_weather_by_month(data)
-save_figure(fig, 'EDA5_weather_by_month')
-plt.close('all')
+show_figure(fig, 'EDA5_weather_by_month')
 
+# %% [markdown]
+# ## 2.5 Statistical functions
+#
+# Rank-based tests with effect sizes, bootstrap confidence intervals for pooled ratios, correlations and regression models. They are used by the tables and figures below.
 
-# ----------------------------------------------------------------------------
-# 2.5 Statistical functions
-# Rank-based tests with effect sizes, bootstrap confidence intervals for
-# pooled ratios, correlations and regression models. They are used by the
-# tables and figures below.
-# ----------------------------------------------------------------------------
+# %% [markdown]
+# **Settings and effect-size helpers**
 
-# ----------------------------------------------------------------------------
-# Settings and effect-size helpers
-# ----------------------------------------------------------------------------
+# %%
 RNG_SEED = RANDOM_SEED
 
 
@@ -945,10 +1102,10 @@ def describe_r(r: float) -> str:
         return "medium"
     return "large"
 
+# %% [markdown]
+# **Assumption checks and group comparisons**
 
-# ----------------------------------------------------------------------------
-# Assumption checks and group comparisons
-# ----------------------------------------------------------------------------
+# %%
 # Assumption checks
 def assumption_checks(df: pd.DataFrame, values: list[str], group: str = "Transport_Mode") -> pd.DataFrame:
     """Normality within groups (D'Agostino-Pearson) and equal variances
@@ -1033,10 +1190,10 @@ def event_day_tests(df: pd.DataFrame, values: list[str]) -> pd.DataFrame:
     out["p (Holm)"] = multipletests(out["p"], method="holm")[1]
     return out
 
+# %% [markdown]
+# **Bootstrap confidence intervals and the mode scorecard**
 
-# ----------------------------------------------------------------------------
-# Bootstrap confidence intervals and the mode scorecard
-# ----------------------------------------------------------------------------
+# %%
 # Bootstrap confidence intervals
 def bootstrap_ratio_ci(num: np.ndarray, den: np.ndarray, scale: float = 1.0,
                        n_boot: int = N_BOOT, seed: int = RNG_SEED, alpha: float = 0.05):
@@ -1077,6 +1234,7 @@ def mode_scorecard(df: pd.DataFrame) -> pd.DataFrame:
         ("Complaints per 10k passengers", "Accessibility_Complaints", "Passengers", 10_000),
         ("CO2 saved per passenger (kg)", "CO2_Saved_KG", "Passengers", 1),
         ("Net cost per passenger (EUR)", "Net_Cost_EUR", "Passengers", 1),
+        ("Energy per passenger (kWh)", "Energy_Consumption_KWh", "Passengers", 1),
     ]
     d = df.assign(Net_Cost_EUR=df["Operating_Cost_EUR"] - df["Ticket_Revenue_EUR"])
     frames = []
@@ -1086,10 +1244,10 @@ def mode_scorecard(df: pd.DataFrame) -> pd.DataFrame:
         frames.append(t)
     return pd.concat(frames, ignore_index=True)
 
+# %% [markdown]
+# **Correlations**
 
-# ----------------------------------------------------------------------------
-# Correlations
-# ----------------------------------------------------------------------------
+# %%
 # Correlation
 def spearman_matrix(df: pd.DataFrame, cols: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Spearman rho and p-value matrices."""
@@ -1121,10 +1279,10 @@ def within_mode_range(df: pd.DataFrame, cols: list[str]) -> tuple[pd.DataFrame, 
     return (pd.DataFrame(stack.min(axis=0), index=cols, columns=cols),
             pd.DataFrame(stack.max(axis=0), index=cols, columns=cols))
 
+# %% [markdown]
+# **Regression models, city demand index and event uplift**
 
-# ----------------------------------------------------------------------------
-# Regression models, city demand index and event uplift
-# ----------------------------------------------------------------------------
+# %%
 # Regression models (descriptive adjustment for confounding)
 DEMAND_FORMULA = (
     "np.log(Passengers) ~ C(Transport_Mode, Treatment('Bus')) + C(City)"
@@ -1203,27 +1361,33 @@ def term_wald_tests(model, factors: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def city_demand_index(df: pd.DataFrame, n_boot: int = N_BOOT, seed: int = RNG_SEED) -> pd.DataFrame:
-    """Observed / expected passengers per city (indirect standardisation).
+def demand_index(df: pd.DataFrame, level: str = "City", n_boot: int = N_BOOT,
+                 seed: int = RNG_SEED) -> pd.DataFrame:
+    """Observed / expected passengers per city or country (indirect standardisation).
 
     'Expected' comes from a demand model *without* city, so it reflects each
-    city's mix of modes, routes, weather, event days and calendar. An index
-    of 1.10 means the city carries 10% more passengers than its service mix
-    predicts. CIs bootstrap records within each city (model held fixed).
+    place's mix of modes, routes, weather, event days and calendar. An index
+    of 1.10 means the place carries 10% more passengers than its service mix
+    predicts. CIs bootstrap records within each place (model held fixed).
     """
     base = smf.ols(DEMAND_FORMULA.replace(" + C(City)", ""), data=df).fit()
     smear = np.mean(np.exp(base.resid))  # Duan smearing: unbiased back-transform
     expected = np.exp(base.fittedvalues) * smear
     d = df.assign(Expected=expected)
     rows = []
-    for city, g in d.groupby("City", observed=True):
+    for place, g in d.groupby(level, observed=True):
         est, lo, hi = bootstrap_ratio_ci(g["Passengers"].to_numpy(), g["Expected"].to_numpy(),
                                          n_boot=n_boot, seed=seed)
-        rows.append({"City": city, "Country": g["Country"].iloc[0], "n": len(g),
+        rows.append({level: place, "Country": g["Country"].iloc[0], "n": len(g),
                      "Raw mean passengers": g["Passengers"].mean(),
                      "Index (obs/exp)": est, "CI low": lo, "CI high": hi})
     out = pd.DataFrame(rows).sort_values("Index (obs/exp)", ascending=False)
     return out.reset_index(drop=True)
+
+
+def city_demand_index(df: pd.DataFrame, n_boot: int = N_BOOT, seed: int = RNG_SEED) -> pd.DataFrame:
+    """City version of demand_index (kept for the code that calls it)."""
+    return demand_index(df, "City", n_boot, seed)
 
 
 def monthly_mode_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -1254,18 +1418,18 @@ def event_uplift(df: pd.DataFrame) -> pd.DataFrame:
     out["Extra delay (min)"] = out["Delay (event)"] - out["Delay (no event)"]
     return out.reindex(MODE_ORDER)
 
+# %% [markdown]
+# ## 2.6 Assumption checks - justify the choice of tests
 
-# ----------------------------------------------------------------------------
-# 2.6 Assumption checks - justify the choice of tests
-# ----------------------------------------------------------------------------
+# %%
 s01 = assumption_checks(data, ['Passengers', 'Average_Delay_Minutes', 'Customer_Rating',
                                'Complaints_per_10k_Pax'])
-print(s01)
+display(s01)
 
+# %% [markdown]
+# ## 2.7 Omnibus group comparisons (Kruskal-Wallis, pooled)
 
-# ----------------------------------------------------------------------------
-# 2.7 Omnibus group comparisons (Kruskal-Wallis, pooled)
-# ----------------------------------------------------------------------------
+# %%
 tests = [
     ('Passengers', 'Transport_Mode'), ('Average_Delay_Minutes', 'Transport_Mode'),
     ('Customer_Rating', 'Transport_Mode'), ('Revenue_Cost_Ratio', 'Transport_Mode'),
@@ -1274,81 +1438,87 @@ tests = [
     ('Average_Delay_Minutes', 'Route_Type'), ('Complaints_per_10k_Pax', 'Route_Type'),
 ]
 s02 = pd.DataFrame([kruskal_test(data, v, g) for v, g in tests])
-print(s02)
+display(s02)
 
+# %% [markdown]
+# ## 2.8 Stratified tests - effects within each transport mode
 
-# ----------------------------------------------------------------------------
-# 2.8 Stratified tests - effects within each transport mode
-# ----------------------------------------------------------------------------
+# %%
 s03 = pd.concat([
     kruskal_within(data, 'Average_Delay_Minutes', 'Weather'),
     kruskal_within(data, 'Passengers', 'City'),
     kruskal_within(data, 'Complaints_per_10k_Pax', 'Route_Type'),
 ], ignore_index=True)
-print(s03[['Test', 'n', 'H', 'p (Holm)', 'epsilon^2', 'Effect size', 'Highest median', 'Lowest median']])
+display(s03[['Test', 'n', 'H', 'p (Holm)', 'epsilon^2', 'Effect size', 'Highest median', 'Lowest median']])
 
+# %%
 s04 = dunn_posthoc(data, 'Average_Delay_Minutes', 'Weather', WEATHER_ORDER)
 print('Dunn post-hoc, Holm-adjusted p-values (delay by weather):')
-print(s04)
+display(s04)
 
+# %% [markdown]
+# ## 2.9 Event days vs non-event days (Mann-Whitney U within each mode)
 
-# ----------------------------------------------------------------------------
-# 2.9 Event days vs non-event days (Mann-Whitney U within each mode)
-# ----------------------------------------------------------------------------
+# %%
 s05 = event_day_tests(data, ['Passengers', 'Average_Delay_Minutes', 'Customer_Rating'])
-print(s05[['Variable', 'Mode', 'n event', 'Median event', 'Median non-event', 'Median change (%)',
+display(s05[['Variable', 'Mode', 'n event', 'Median event', 'Median non-event', 'Median change (%)',
      'Rank-biserial r', 'Effect size', 'p (Holm)']])
 
+# %%
 uplift = event_uplift(data)
-print(uplift)
+display(uplift)
 
+# %% [markdown]
+# ## 2.10 KPI scorecard by mode with 95% bootstrap CIs
 
-# ----------------------------------------------------------------------------
-# 2.10 KPI scorecard by mode with 95% bootstrap CIs
-# ----------------------------------------------------------------------------
+# %%
 scorecard = mode_scorecard(data)
-print(scorecard.pivot(index='Transport_Mode', columns='KPI', values='Estimate').reindex(MODE_ORDER))
+display(scorecard.pivot(index='Transport_Mode', columns='KPI', values='Estimate').reindex(MODE_ORDER))
 
+# %% [markdown]
+# ## 2.11 Correlations - pooled and within mode
 
-# ----------------------------------------------------------------------------
-# 2.11 Correlations - pooled and within mode
-# ----------------------------------------------------------------------------
+# %%
 rho, rho_p = spearman_matrix(data, NUMERIC_COLS)
 pairs = [('Average_Delay_Minutes', 'Customer_Rating'), ('Passengers', 'Accessibility_Complaints'),
          ('Passengers', 'Average_Delay_Minutes'), ('Passengers', 'Operating_Cost_EUR')]
 s07 = within_mode_correlations(data, pairs)
-print(s07.pivot(index='Pair', columns='Mode', values='rho'))
+display(s07.pivot(index='Pair', columns='Mode', values='rho'))
 
+# %% [markdown]
+# ## 2.12 Regression models (descriptive adjustment for confounding; HC3 robust SEs)
 
-# ----------------------------------------------------------------------------
-# 2.12 Regression models (descriptive adjustment for confounding; HC3 robust SEs)
-# ----------------------------------------------------------------------------
+# %%
 demand = fit_ols(data, DEMAND_FORMULA)
 delay = fit_ols(data, DELAY_FORMULA)
 rating = fit_ols(data, RATING_FORMULA)
 s08 = pd.DataFrame([model_summary(demand, 'log(Passengers)'),
                     model_summary(delay, 'Average delay (min)'),
                     model_summary(rating, 'Customer rating')])
-print(s08)
+display(s08)
 
+# %%
 s09 = coefficient_table(demand, log_outcome=True)
-print(s09[['Term', '% effect', '% effect (CI low)', '% effect (CI high)', 'p']])
+display(s09[['Term', '% effect', '% effect (CI low)', '% effect (CI high)', 'p']])
 
+# %%
 print('Joint Wald tests (demand model):')
-print(term_wald_tests(demand, ['City', 'Route_Type', 'Weather', 'Month', 'Weekday']))
+display(term_wald_tests(demand, ['City', 'Route_Type', 'Weather', 'Month', 'Weekday']))
 
+# %%
 s10 = coefficient_table(delay)
 print('Joint Wald tests (delay model):')
 display(term_wald_tests(delay, ['City', 'Route_Type', 'Weather', 'Month', 'Weekday']))
-print(s10[['Term', 'Coef', 'CI low', 'CI high', 'p']])
+display(s10[['Term', 'Coef', 'CI low', 'CI high', 'p']])
 
+# %%
 s11 = coefficient_table(rating)
-print(s11[['Term', 'Coef', 'CI low', 'CI high', 'p']])
+display(s11[['Term', 'Coef', 'CI low', 'CI high', 'p']])
 
+# %% [markdown]
+# **Shared chart text helpers** (titles, footers) used by every figure below
 
-# ----------------------------------------------------------------------------
-# Shared chart text helpers (titles, footers) used by every figure below
-# ----------------------------------------------------------------------------
+# %%
 SOURCE = "Source: EcoMoveMobility.xlsx (n = 5,000 records, Jan 2024-Dec 2025)."
 
 
@@ -1381,6 +1551,7 @@ def _finish(fig) -> None:
     h = fig.get_figheight()
     fig.tight_layout(rect=(0, 0.35 / h, 1, 1 - 0.80 / h))
 
+# %%
 # Diagnostic - regression residuals (appendix)
 def diag_regression_residuals(model, name: str) -> plt.Figure:
     """Residuals vs fitted and a normal Q-Q plot for a fitted OLS model."""
@@ -1388,44 +1559,46 @@ def diag_regression_residuals(model, name: str) -> plt.Figure:
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.2))
     a1.scatter(model.fittedvalues, model.resid, s=5, alpha=0.3, color=BASE)
     a1.axhline(0, color=HIGHLIGHT, lw=1)
-    a1.set_xlabel("Fitted values")
-    a1.set_ylabel("Residuals")
-    a1.set_title("Residuals vs fitted", fontsize=10)
+    a1.set_xlabel("Predicted value (log scale)")
+    a1.set_ylabel("Residual (actual - predicted)")
+    a1.set_title("(a) Residuals against predicted values: no pattern = good fit", fontsize=10)
     (osm, osr), (slope, intercept, _) = st.probplot(model.resid, dist="norm")
     a2.scatter(osm, osr, s=5, alpha=0.3, color=BASE)
     a2.plot(osm, slope * np.asarray(osm) + intercept, color=HIGHLIGHT, lw=1)
-    a2.set_xlabel("Theoretical normal quantiles")
-    a2.set_ylabel("Ordered residuals")
-    a2.set_title("Normal Q-Q", fontsize=10)
-    fig.suptitle(f"Regression diagnostics: {name} (R-squared = {model.rsquared:.2f})",
+    a2.set_xlabel("Expected value if residuals were normal")
+    a2.set_ylabel("Actual residual (sorted)")
+    a2.set_title("(b) Q-Q plot: points on the line = normally distributed residuals", fontsize=10)
+    fig.suptitle(f"Checking the {name}: it explains {model.rsquared:.0%} of the variation (R-squared)",
                  x=0.01, ha="left", fontsize=12, fontweight="bold")
     fig.tight_layout()
     return fig
 
-fig = diag_regression_residuals(demand, 'log(Passengers) model')
-save_figure(fig, 'DIAG1_demand_model_residuals')
-plt.close('all')
+# %%
+fig = diag_regression_residuals(demand, 'demand model (log of passengers)')
+show_figure(fig, 'DIAG1_demand_model_residuals')
 fig = diag_regression_residuals(delay, 'delay model')
-save_figure(fig, 'DIAG2_delay_model_residuals')
-plt.close('all')
+show_figure(fig, 'DIAG2_delay_model_residuals')
 
+# %% [markdown]
+# ## 2.13 City demand index and accessibility rates
 
-# ----------------------------------------------------------------------------
-# 2.13 City demand index and accessibility rates
-# ----------------------------------------------------------------------------
+# %%
 s12 = city_demand_index(data)
-print(s12)
+display(s12)
+s13 = demand_index(data, "Country")
+display(s13)
 
+# %%
 route_mode = grouped_ratio_ci(data, ['Route_Type', 'Transport_Mode'], 'Accessibility_Complaints',
                                 'Passengers', scale=10_000)
 route_all = grouped_ratio_ci(data, 'Route_Type', 'Accessibility_Complaints', 'Passengers', scale=10_000)
 display(route_all)
-print(route_mode.pivot(index='Route_Type', columns='Transport_Mode', values='Estimate').reindex(index=ROUTE_ORDER, columns=MODE_ORDER))
+display(route_mode.pivot(index='Route_Type', columns='Transport_Mode', values='Estimate').reindex(index=ROUTE_ORDER, columns=MODE_ORDER))
 
+# %% [markdown]
+# ## 2.14 Main report figures
 
-# ----------------------------------------------------------------------------
-# 2.14 Main report figures
-# ----------------------------------------------------------------------------
+# %%
 # Report figure - time series
 def fig1_demand_time_series(monthly: pd.DataFrame, month_effects: pd.Series) -> plt.Figure:
     """Small multiples: monthly demand index per mode with 3-month rolling mean.
@@ -1455,7 +1628,7 @@ def fig1_demand_time_series(monthly: pd.DataFrame, month_effects: pd.Series) -> 
     axes[0, 0].set_ylim(60, 140)
     oct_effect = month_effects.get(10, np.nan)
     apr_effect = month_effects.get(4, np.nan)
-    _titles(fig, "Demand per service tends to peak in spring and dip from late summer to autumn",
+    _titles(fig, "Demand per record is usually higher in spring and lower in autumn; the pattern is weaker for some modes",
             "Mean passengers per record each month, indexed to each mode's two-year average "
             "(=100). Thin line = monthly value; thick line = centred 3-month rolling mean.")
     _footer(fig, f"Model-adjusted: April {apr_effect:+.0f}%, October {oct_effect:+.0f}% "
@@ -1463,49 +1636,70 @@ def fig1_demand_time_series(monthly: pd.DataFrame, month_effects: pd.Series) -> 
     _finish(fig)
     return fig
 
+# %%
 month_fx = s09[s09['Term'].str.startswith('Month')].set_index('Term')['% effect']
 month_fx.index = [int(t.split(': ')[1]) for t in month_fx.index]
 fig = fig1_demand_time_series(monthly_mode_index(data), month_fx)
-save_figure(fig, 'Fig1_demand_time_series')
-plt.close('all')
+show_figure(fig, 'Fig1_demand_time_series')
 
-# Report figure - city comparison
-def fig2_city_comparison(city_idx: pd.DataFrame, overall_mean: float) -> plt.Figure:
-    """Dot plot: mode-adjusted demand index with 95% CI, plus the unadjusted index."""
-    d = city_idx.sort_values("Index (obs/exp)").reset_index(drop=True)
-    raw = d["Raw mean passengers"] / overall_mean
+# %%
+# Report figure - city and country comparison
+ISO = {"France": "FR", "Germany": "DE", "Spain": "ES", "Italy": "IT",
+       "Austria": "AT", "Netherlands": "NL"}  # ISO 3166-1 alpha-2
+
+
+def _index_panel(ax, d: pd.DataFrame, labels: list[str], raw: pd.Series | None) -> None:
+    """Dots with 95% CIs on a common scale; optional hollow dots for the unadjusted index."""
     y = np.arange(len(d))
-    fig, ax = plt.subplots(figsize=(9.5, 6))
     ax.axvline(1.0, color=NEUTRAL, lw=1)
     ax.hlines(y, d["CI low"], d["CI high"], color=BASE, lw=2.2, zorder=2)
-    ax.scatter(raw, y, s=55, facecolor="white", edgecolor=NEUTRAL, lw=1.3, zorder=3,
-               label="Unadjusted (city mean / overall mean)")
+    if raw is not None:
+        ax.scatter(raw, y, s=55, facecolor="white", edgecolor=NEUTRAL, lw=1.3, zorder=3,
+                   label="Unadjusted (mean per record / overall mean)")
     ax.scatter(d["Index (obs/exp)"], y, s=70, color=BASE, zorder=4,
                label="Adjusted for service mix, with 95% CI")
     for yi, (v, hi) in enumerate(zip(d["Index (obs/exp)"], d["CI high"])):
-        ax.text(max(hi, raw.iloc[yi]) + 0.015, yi, f"{100 * (v - 1):+.0f}%", va="center",
-                fontsize=9, color="black")
-    iso = {"France": "FR", "Germany": "DE", "Spain": "ES", "Italy": "IT",
-           "Austria": "AT", "Netherlands": "NL"}  # ISO 3166-1 alpha-2
-    ax.set_yticks(y, [f"{c} ({iso.get(k, k)})" for c, k in zip(d["City"], d["Country"])])
-    ax.set_xlabel("Demand index (1.0 = passengers expected for the city's mix of modes, routes and conditions)")
+        right = max(hi, raw.iloc[yi]) if raw is not None else hi
+        ax.text(right + 0.015, yi, f"{100 * (v - 1):+.0f}%", va="center", fontsize=9, color="black")
+    ax.set_yticks(y, labels)
     ax.grid(axis="x", color="#E6E6E6")
     ax.grid(axis="y", visible=False)
-    ax.legend(loc="lower right", fontsize=8.5)
     ax.set_xlim(0.65, 1.45)
-    _titles(fig, "Paris and Berlin carry 24-31% more passengers than their service mix predicts; "
-                 "Rotterdam 21% fewer",
-            "Observed / expected passengers per city. Expected values come from a log-linear model "
-            "without city (mode, route, weather, event, month, weekday).")
-    _footer(fig, "CIs: 2,000 bootstrap resamples of records within each city. "
+
+
+def fig2_city_comparison(city_idx: pd.DataFrame, overall_mean: float,
+                         country_idx: pd.DataFrame | None = None) -> plt.Figure:
+    """(a) cities and (b) countries: demand index adjusted for service mix, with 95% CIs."""
+    d = city_idx.sort_values("Index (obs/exp)").reset_index(drop=True)
+    raw = d["Raw mean passengers"] / overall_mean
+    if country_idx is None:
+        fig, ax = plt.subplots(figsize=(9.5, 6))
+        axes = [ax]
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 6), gridspec_kw={"width_ratios": [1.5, 1]})
+    _index_panel(axes[0], d, [f"{c} ({ISO.get(k, k)})" for c, k in zip(d["City"], d["Country"])], raw)
+    axes[0].legend(loc="lower right", fontsize=8.5)
+    axes[0].set_title("(a) Cities", fontsize=10.5)
+    axes[0].set_xlabel("Demand index (1.0 = passengers expected for the service mix)")
+    if country_idx is not None:
+        c = country_idx.sort_values("Index (obs/exp)").reset_index(drop=True)
+        _index_panel(axes[1], c, list(c["Country"]), None)
+        axes[1].set_title("(b) Countries", fontsize=10.5)
+        axes[1].set_xlabel("Demand index")
+    _titles(fig, "After allowing for service mix, Paris and Berlin carry more passengers than expected; "
+                 "Rotterdam and Lyon fewer",
+            "Observed / expected passengers. Expected values come from a model without city "
+            "(mode, route, weather, event day, month, weekday). Countries combine their cities.")
+    _footer(fig, "CIs: 2,000 bootstrap resamples of records within each city or country. "
                  "Country codes: FR, DE, ES, IT, AT, NL.")
     _finish(fig)
     return fig
 
-fig = fig2_city_comparison(s12, data['Passengers'].mean())
-save_figure(fig, 'Fig2_city_comparison')
-plt.close('all')
+# %%
+fig = fig2_city_comparison(s12, data['Passengers'].mean(), s13)
+show_figure(fig, 'Fig2_city_comparison')
 
+# %%
 # Report figure - relationships
 def fig3_correlation_heatmap(rho: pd.DataFrame, within_min: pd.DataFrame,
                              within_max: pd.DataFrame) -> plt.Figure:
@@ -1548,23 +1742,57 @@ def fig3_correlation_heatmap(rho: pd.DataFrame, within_min: pd.DataFrame,
     _finish(fig)
     return fig
 
+# %%
 dv = DECISION_VARS
 rho_dv, _ = spearman_matrix(data, dv)
 wmin, wmax = within_mode_range(data, dv)
 fig = fig3_correlation_heatmap(rho_dv, wmin, wmax)
-save_figure(fig, 'Fig3_correlation_heatmap')
-plt.close('all')
+show_figure(fig, 'Fig3_correlation_heatmap')
 
+# %%
+# Report figure - relationship in the raw records
+def fig3b_delay_rating_scatter(df: pd.DataFrame, slope: float) -> plt.Figure:
+    """One scatter panel per mode: every record's delay against its rating, with a straight-line fit."""
+    fig, axes = plt.subplots(2, 3, figsize=(13, 6.6), sharex=True, sharey=True)
+    for ax, mode in zip(axes.flat, MODE_ORDER):
+        sub = df[df["Transport_Mode"] == mode]
+        ax.scatter(sub["Average_Delay_Minutes"], sub["Customer_Rating"], s=6, alpha=0.25,
+                   color=MODE_COLOURS[mode], linewidths=0)
+        b, a = np.polyfit(sub["Average_Delay_Minutes"], sub["Customer_Rating"], 1)
+        xs = np.linspace(sub["Average_Delay_Minutes"].min(), sub["Average_Delay_Minutes"].max(), 50)
+        ax.plot(xs, a + b * xs, color="black", lw=1.6)
+        rho_m = stats.spearmanr(sub["Average_Delay_Minutes"], sub["Customer_Rating"])[0]
+        ax.text(0.97, 0.94, f"rho = {rho_m:.2f}\nn = {len(sub):,}", transform=ax.transAxes,
+                ha="right", va="top", fontsize=8.5, color=NEUTRAL)
+        ax.set_title(mode, fontsize=11, color="black")
+        ax.grid(axis="both", color="#EEEEEE")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Customer rating (1-5)")
+    for ax in axes[1, :]:
+        ax.set_xlabel("Average delay (minutes)")
+    _titles(fig, "In every mode, records with longer delays have lower customer ratings",
+            "Each dot is one record; black line = straight-line fit within the mode. "
+            "This shows an association, not proof that delay causes low ratings.")
+    _footer(fig, f"Rating model (all modes, adjusted for mode, weather and event day): "
+                 f"{slope:+.2f} rating points per extra minute of delay.")
+    _finish(fig)
+    return fig
+
+# %%
+fig = fig3b_delay_rating_scatter(data, rating.params['Average_Delay_Minutes'])
+show_figure(fig, 'Fig3b_delay_rating_scatter')
+
+# %%
 # Report figure - distribution
 def fig4_delay_by_weather(df: pd.DataFrame, snow_effect: tuple[float, float, float]) -> plt.Figure:
-    """Box plots of delay by weather, split into mass transit and micromobility."""
+    """Box plots of delay by weather, one panel per transport mode."""
     med_order = (df.groupby("Weather", observed=True)["Average_Delay_Minutes"].median()
                  .sort_values().index.tolist())
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2), sharey=True)
-    for ax, group in zip(axes, ["Mass transit", "Micromobility"]):
-        sub = df[df["Mode_Group"] == group]
-        data = [sub.loc[sub["Weather"] == w, "Average_Delay_Minutes"] for w in med_order]
-        bp = ax.boxplot(data, vert=False, tick_labels=med_order, patch_artist=True, widths=0.6,
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7.2), sharex=True, sharey=True)
+    for ax, mode in zip(axes.flat, MODE_ORDER):
+        sub = df[df["Transport_Mode"] == mode]
+        data_ = [sub.loc[sub["Weather"] == w, "Average_Delay_Minutes"] for w in med_order]
+        bp = ax.boxplot(data_, vert=False, tick_labels=med_order, patch_artist=True, widths=0.6,
                         showfliers=True,
                         flierprops=dict(marker="o", ms=2.5, alpha=0.35, markeredgewidth=0,
                                         markerfacecolor=NEUTRAL),
@@ -1573,54 +1801,67 @@ def fig4_delay_by_weather(df: pd.DataFrame, snow_effect: tuple[float, float, flo
         for patch, w in zip(bp["boxes"], med_order):
             patch.set_facecolor(HIGHLIGHT if w == "Snow" else "#C9D7E8")
             patch.set_edgecolor("white")
-        for yi, d in enumerate(data, start=1):
-            ax.text(d.max() + 0.3, yi, f"median {d.median():.1f}  (n={len(d):,})",
-                    va="center", fontsize=8, color=NEUTRAL)
-        ax.set_title(f"{group} ({', '.join(m for m in MODE_ORDER if (m in MICROMOBILITY_MODES) == (group == 'Micromobility'))})",
-                     fontsize=10)
-        ax.set_xlabel("Average delay per record (minutes)")
+        for yi, d in enumerate(data_, start=1):
+            ax.text(d.max() + 0.3, yi, f"{d.median():.1f}", va="center", fontsize=8, color=NEUTRAL)
+        ax.set_title(mode, fontsize=11, color="black")
         ax.set_xlim(0, 17)
         ax.grid(axis="x", color="#E6E6E6")
         ax.grid(axis="y", visible=False)
+    for ax in axes[1, :]:
+        ax.set_xlabel("Average delay per record (minutes)")
     est, lo, hi = snow_effect
-    _titles(fig, "Snow is the strongest delay driver for every type of service; rain and "
-                 "heatwaves add smaller delays",
-            "Distribution of average delay per record by weather, ordered by overall median. "
-            "Boxes = interquartile range, line = median, whiskers = 1.5 x IQR.")
+    _titles(fig, "Snow brings the longest delays in every mode; rain and heatwaves add smaller delays",
+            "Average delay per record by weather, ordered by overall median. Boxes = middle 50% of records, "
+            "line and number = median, whiskers = 1.5 x IQR.")
     _footer(fig, f"Model-adjusted snow effect vs clear: +{est:.2f} min (95% CI {lo:.2f}-{hi:.2f}). "
-                 "Kruskal-Wallis within every mode: p < 0.001, epsilon-squared 0.25-0.31.")
+                 "Kruskal-Wallis within every mode: p < 0.001.")
     _finish(fig)
     return fig
 
+# %%
 snow = s10.set_index('Term').loc['Weather: Snow']
 fig = fig4_delay_by_weather(data, (snow['Coef'], snow['CI low'], snow['CI high']))
-save_figure(fig, 'Fig4_delay_by_weather')
-plt.close('all')
+show_figure(fig, 'Fig4_delay_by_weather')
 
+# %%
 # Report figure - performance indicators
 def fig5_mode_scorecard(scorecard: pd.DataFrame) -> plt.Figure:
-    """Four small-multiple bar panels: cost recovery, delay, rating, CO2 per passenger."""
+    """Five small-multiple panels: cost recovery, delay, rating, CO2 and energy per passenger.
+
+    Measures with a true zero use bars. Customer rating is on a 1-5 scale with no
+    zero, so it uses dots on a narrow scale instead of bars.
+    """
     panels = [
         ("Revenue / cost (pooled)", "Cost recovery\n(revenue / cost)", "{:.2f}", 1.0, "break-even"),
         ("Mean delay (min)", "Mean delay\n(minutes; lower is better)", "{:.1f}", None, None),
-        ("Mean customer rating", "Mean customer rating\n(1-5 scale)", "{:.2f}", None, None),
+        ("Mean customer rating", "Mean customer rating\n(1-5 scale; dots)", "{:.2f}", None, None),
         ("CO2 saved per passenger (kg)", "CO2 saved per passenger\n(kg)", "{:.2f}", None, None),
+        ("Energy per passenger (kWh)", "Energy used per passenger\n(kWh)", "{:.3f}", None, None),
     ]
     modes = MODE_ORDER
-    fig, axes = plt.subplots(1, 4, figsize=(14, 4.8), sharey=True)
+    fig, axes = plt.subplots(1, 5, figsize=(16.5, 4.9), sharey=True)
     for ax, (kpi, title, fmt, ref, ref_label) in zip(axes, panels):
         d = scorecard[scorecard["KPI"] == kpi].set_index("Transport_Mode").reindex(modes)
         y = np.arange(len(modes))
         err = np.vstack([d["Estimate"] - d["CI low"], d["CI high"] - d["Estimate"]])
-        ax.barh(y, d["Estimate"], color=[MODE_COLOURS[m] for m in modes], height=0.62,
-                xerr=err, error_kw=dict(ecolor="black", lw=0.8, capsize=2))
-        xmax = (d["CI high"].max()) * 1.32
-        for yi, v in enumerate(d["Estimate"]):
-            ax.text(v + xmax * 0.03, yi, fmt.format(v), va="center", fontsize=9)
+        colours = [MODE_COLOURS[m] for m in modes]
+        if kpi == "Mean customer rating":
+            ax.errorbar(d["Estimate"], y, xerr=err, fmt="none", ecolor="black", lw=0.8, capsize=2, zorder=2)
+            ax.scatter(d["Estimate"], y, s=80, color=colours, zorder=3)
+            lo_x, hi_x = 3.5, 4.6
+            for yi, v in enumerate(d["Estimate"]):
+                ax.text(v + 0.05, yi, fmt.format(v), va="center", fontsize=9)
+            ax.set_xlim(lo_x, hi_x)
+        else:
+            ax.barh(y, d["Estimate"], color=colours, height=0.62,
+                    xerr=err, error_kw=dict(ecolor="black", lw=0.8, capsize=2))
+            xmax = (d["CI high"].max()) * 1.35
+            for yi, v in enumerate(d["Estimate"]):
+                ax.text(v + xmax * 0.03, yi, fmt.format(v), va="center", fontsize=9)
+            ax.set_xlim(0, xmax)
         if ref is not None:
             ax.axvline(ref, color="black", lw=1, ls="--")
             ax.text(ref + 0.03, len(modes) - 0.45, ref_label, ha="left", fontsize=8, color="black")
-        ax.set_xlim(0, xmax if kpi != "Mean customer rating" else 5.6)
         ax.set_title(title, fontsize=10)
         ax.set_yticks(y, modes)
         ax.set_axisbelow(True)
@@ -1628,18 +1869,19 @@ def fig5_mode_scorecard(scorecard: pd.DataFrame) -> plt.Figure:
         ax.grid(axis="y", visible=False)
         ax.tick_params(axis="x", labelsize=8)
     axes[0].invert_yaxis()  # shared y: invert once so Metro sits at the top
-    _titles(fig, "No mode leads on every indicator: micromobility is the most reliable and best rated "
-                 "but recovers only 5-7% of its costs",
+    _titles(fig, "No mode does best on every measure: Bike Share and E-Scooter have the shortest delays "
+                 "and best ratings but cover only 5-7% of their costs",
             "Key performance indicators by transport mode. Ratios are pooled (sum / sum); "
-            "error bars = 95% bootstrap confidence intervals.", y=0.98)
-    _footer(fig, "Bus: weakest reliability and rating; Park and Ride: highest cost recovery.")
+            "error bars = 95% bootstrap confidence intervals.")
+    _footer(fig, "Revenue is ticket income only (no subsidies). Bike Share records show no energy use.")
     _finish(fig)
     return fig
 
+# %%
 fig = fig5_mode_scorecard(scorecard)
-save_figure(fig, 'Fig5_mode_scorecard')
-plt.close('all')
+show_figure(fig, 'Fig5_mode_scorecard')
 
+# %%
 # Report figure - accessibility
 def fig6_accessibility_heatmap(rates: pd.DataFrame, route_rates: pd.DataFrame) -> plt.Figure:
     """Complaints per 10k passengers: route type x mode, with an all-modes column."""
@@ -1664,8 +1906,8 @@ def fig6_accessibility_heatmap(rates: pd.DataFrame, route_rates: pd.DataFrame) -
     ax.set_yticks(range(len(ROUTE_ORDER)), ROUTE_ORDER)
     ax2.set_xticks([0], ["All modes"])
     ax2.set_yticks([])
-    _titles(fig, "Micromobility on Suburban Feeder routes generates ~4x the accessibility "
-                 "complaints of the same modes elsewhere",
+    _titles(fig, "Bike Share and E-Scooter on Suburban Feeder routes have about four times "
+                 "the complaint rate of the same modes elsewhere",
             "Accessibility complaints per 10,000 passengers (pooled: total complaints / total "
             "passengers in each cell). Darker = higher rate.", y=1.02)
     _footer(fig, "Each cell contains 71-244 records. Micromobility rates rest on small passenger "
@@ -1673,10 +1915,11 @@ def fig6_accessibility_heatmap(rates: pd.DataFrame, route_rates: pd.DataFrame) -
     _finish(fig)
     return fig
 
+# %%
 fig = fig6_accessibility_heatmap(route_mode, route_all)
-save_figure(fig, 'Fig6_accessibility_heatmap')
-plt.close('all')
+show_figure(fig, 'Fig6_accessibility_heatmap')
 
+# %%
 # Report figure - environmental vs financial (optional)
 def fig7_environment_vs_finance(scorecard: pd.DataFrame, passengers: pd.Series) -> plt.Figure:
     """Bubble chart: cost recovery (x) vs CO2 saved per passenger (y); size = passengers."""
@@ -1701,63 +1944,80 @@ def fig7_environment_vs_finance(scorecard: pd.DataFrame, passengers: pd.Series) 
     ax.set_xlabel("Cost recovery (pooled ticket revenue / operating cost)")
     ax.set_ylabel("CO2 saved per passenger (kg)")
     ax.grid(axis="x", color="#E6E6E6")
-    _titles(fig, "The modes saving the most CO2 per passenger are the least financially "
-                 "self-sustaining",
+    _titles(fig, "The modes that save the most CO2 per passenger cover the smallest share "
+                 "of their costs",
             "Each bubble is a transport mode; bubble area is proportional to total passengers in the sample.")
     _footer(fig, "Mass-transit modes cover their costs while saving 0.06-0.12 kg CO2 per passenger; "
                  "micromobility saves 0.13-0.18 kg but needs about EUR 20 of support per passenger.")
     _finish(fig)
     return fig
 
+# %%
 pax = data.groupby('Transport_Mode', observed=True)['Passengers'].sum()
 fig = fig7_environment_vs_finance(scorecard, pax)
-save_figure(fig, 'Fig7_environment_vs_finance')
-plt.close('all')
+show_figure(fig, 'Fig7_environment_vs_finance')
 
+# %%
 # Report figure - event days (optional)
-def fig8_event_day_effects(uplift: pd.DataFrame) -> plt.Figure:
-    """(a) passenger uplift bars; (b) delay dumbbell, non-event vs event."""
+def fig8a_event_day_passengers(uplift: pd.DataFrame) -> plt.Figure:
+    """Passenger uplift on event days, one bar per mode (demand)."""
     modes = MODE_ORDER
     u = uplift.reindex(modes)
     y = np.arange(len(modes))
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True,
-                                 gridspec_kw={"width_ratios": [1, 1.25]})
-    a1.barh(y, u["Passenger uplift (%)"], color=[MODE_COLOURS[m] for m in modes], height=0.6)
+    fig, ax = plt.subplots(figsize=(9, 4.4))
+    ax.barh(y, u["Passenger uplift (%)"], color=[MODE_COLOURS[m] for m in modes], height=0.6)
     for yi, v in enumerate(u["Passenger uplift (%)"]):
-        a1.text(v + 0.8, yi, f"+{v:.0f}%", va="center", fontsize=9)
-    a1.set_xlim(0, 45)
-    a1.set_title("(a) Passenger uplift on event days", fontsize=10)
-    a1.set_xlabel("Change in mean passengers per record (%)")
-    a1.set_yticks(y, modes)
-    a1.invert_yaxis()
-    a2.hlines(y, u["Delay (no event)"], u["Delay (event)"], color=LIGHT_NEUTRAL, lw=3)
-    a2.scatter(u["Delay (no event)"], y, s=60, color="white", edgecolor=NEUTRAL, lw=1.5,
-               zorder=3, label="Non-event day")
-    a2.scatter(u["Delay (event)"], y, s=60, color=HIGHLIGHT, zorder=3, label="Event day")
-    for yi, (d0, d1) in enumerate(zip(u["Delay (no event)"], u["Delay (event)"])):
-        a2.text(d1 + 0.15, yi, f"+{d1 - d0:.1f} min", va="center", fontsize=9)
-    a2.set_xlim(0, 9)
-    a2.set_title("(b) Mean delay, non-event vs event day", fontsize=10)
-    a2.set_xlabel("Average delay (minutes)")
-    a2.legend(loc="lower right", fontsize=8.5)
-    for a in (a1, a2):
-        a.grid(axis="x", color="#EEEEEE")
-        a.grid(axis="y", visible=False)
-    _titles(fig, "Event days lift demand by 25-37% in every mode but add about one minute of delay",
-            "Mean per record, event vs non-event days (510 event-day records). Differences "
-            "significant in every mode (Mann-Whitney U, Holm-adjusted p < 0.01).")
+        ax.text(v + 0.8, yi, f"+{v:.0f}%", va="center", fontsize=9)
+    ax.set_xlim(0, 45)
+    ax.set_xlabel("Change in mean passengers per record on event days (%)")
+    ax.set_yticks(y, modes)
+    ax.invert_yaxis()
+    ax.grid(axis="x", color="#EEEEEE")
+    ax.grid(axis="y", visible=False)
+    _titles(fig, "On event days every mode carries 25-37% more passengers per record",
+            "Mean passengers per record, event vs non-event days (510 event-day records). Rise significant "
+            "in every mode (Mann-Whitney U, Holm-adjusted p < 0.01).")
     _footer(fig)
     _finish(fig)
     return fig
 
-fig = fig8_event_day_effects(uplift)
-save_figure(fig, 'Fig8_event_day_effects')
-plt.close('all')
 
+def fig8b_event_day_delay(uplift: pd.DataFrame) -> plt.Figure:
+    """Mean delay on non-event and event days, one dumbbell per mode (reliability)."""
+    modes = MODE_ORDER
+    u = uplift.reindex(modes)
+    y = np.arange(len(modes))
+    fig, ax = plt.subplots(figsize=(9, 4.4))
+    ax.hlines(y, u["Delay (no event)"], u["Delay (event)"], color=LIGHT_NEUTRAL, lw=3)
+    ax.scatter(u["Delay (no event)"], y, s=60, color="white", edgecolor=NEUTRAL, lw=1.5,
+               zorder=3, label="Non-event day")
+    ax.scatter(u["Delay (event)"], y, s=60, color=HIGHLIGHT, zorder=3, label="Event day")
+    for yi, (d0, d1) in enumerate(zip(u["Delay (no event)"], u["Delay (event)"])):
+        ax.text(d1 + 0.15, yi, f"+{d1 - d0:.1f} min", va="center", fontsize=9)
+    ax.set_xlim(0, 9)
+    ax.set_xlabel("Average delay per record (minutes)")
+    ax.set_yticks(y, modes)
+    ax.invert_yaxis()
+    ax.legend(loc="lower right", fontsize=8.5)
+    ax.grid(axis="x", color="#EEEEEE")
+    ax.grid(axis="y", visible=False)
+    _titles(fig, "On event days delays are 1.0-1.5 minutes longer in every mode",
+            "Mean delay per record, non-event vs event days (510 event-day records). Rise significant "
+            "in every mode (Mann-Whitney U, Holm-adjusted p < 0.01).")
+    _footer(fig)
+    _finish(fig)
+    return fig
 
-# ----------------------------------------------------------------------------
-# 2.15 Key numbers for the report (computed, not typed)
-# ----------------------------------------------------------------------------
+# %%
+fig = fig8a_event_day_passengers(uplift)
+show_figure(fig, 'Fig8a_event_day_passengers')
+fig = fig8b_event_day_delay(uplift)
+show_figure(fig, 'Fig8b_event_day_delay')
+
+# %% [markdown]
+# ## 2.15 Key numbers for the report (computed, not typed)
+
+# %%
 net = data.assign(Net=data['Operating_Cost_EUR'] - data['Ticket_Revenue_EUR'])
 micro = net[net['Mode_Group'] == 'Micromobility']
 key = pd.Series({
@@ -1773,4 +2033,4 @@ key = pd.Series({
     'Snow extra delay vs clear (min)': delay.params[[i for i in delay.params.index if 'Snow' in i][0]],
     'Event-day extra delay (min, adjusted)': delay.params[[i for i in delay.params.index if 'Event' in i][0]],
 })
-print(key.round(3))
+display(key.round(3))

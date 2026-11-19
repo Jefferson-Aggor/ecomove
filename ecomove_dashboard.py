@@ -2,16 +2,19 @@
 
 Run:
     streamlit run ecomove_dashboard.py
-then upload the EcoMove Excel workbook on the start page. The file is checked
-before the dashboard opens (columns, data types, value ranges, categories).
+The dashboard opens with the supplied dataset ('[5442] EcoMoveMobility.xlsx' or
+'EcoMoveMobility.xlsx' in the same folder). A different workbook can be uploaded
+from the Data menu; it is checked first (columns, data types, value ranges,
+categories) and used only if every check passes.
 Needs: pip install streamlit plotly pandas numpy statsmodels openpyxl
 
 Contents of this file, in order:
     1. Settings          column groups, category orders, colours
-    2. Data              read and validate the uploaded workbook, convert types,
+    2. Data              read and validate the workbook, convert types,
                          add derived measures
-    3. Calculations      filters, KPIs, group summaries, insight sentences
-    4. Page              styling, header with filters and targets, six KPIs,
+    3. Calculations      filters, KPIs, group summaries, adjusted demand index,
+                         insight sentences
+    4. Page              styling, header with filters and targets, four KPIs,
                          nine tabs (Overview, Demand, Cities & modes, Reliability,
                          Finance, Customer, Accessibility, Sustainability,
                          Data & method)
@@ -28,6 +31,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import statsmodels.formula.api as smf
 import streamlit as st
 
 
@@ -452,31 +456,46 @@ def cities_for(df: pd.DataFrame, countries: list[str]) -> list[str]:
 # KPIs
 KPI_SPECS = [
     # key, label, kind ('sum' or 'mean'), help text
-    ("passengers", "Total passengers", "sum", "Sum of passengers across selected records."),
-    ("trips", "Total trips", "sum", "Sum of trips. For Bike Share / E-Scooter one trip = one rental."),
+    ("passengers", "Passengers (in records)", "sum",
+     "Sum of passengers across the selected records. The data are service records, not a full count "
+     "of all journeys, so totals depend on how many records are selected."),
+    ("trips", "Trips (in records)", "sum",
+     "Sum of trips. For Bike Share / E-Scooter Trips always equals Passengers, so a trip there appears "
+     "to mean one rental; for other modes it appears to mean one vehicle journey."),
     ("revenue", "Ticket revenue", "sum", "Sum of ticket revenue (EUR). Excludes subsidies."),
     ("cost", "Operating cost", "sum", "Sum of operating cost (EUR)."),
     ("surplus", "Operating surplus", "sum", "Revenue minus operating cost (EUR). Negative = deficit."),
     ("delay", "Average delay", "mean", "Mean of record-level average delay (minutes)."),
     ("on_time", "On-time performance", "mean", "Mean on-time percentage across records."),
-    ("co2", "CO2 saved", "sum", "Sum of CO2 saved (tonnes)."),
+    ("co2", "CO2 saved (in records)", "sum", "Sum of CO2 saved across the selected records (tonnes)."),
     ("complaints", "Accessibility complaints", "sum", "Total complaints; rate per 10k passengers shown below."),
     ("rating", "Customer rating", "mean", "Mean customer rating across records (1-5 scale)."),
+    ("revenue_cost", "Cost recovery", "ratio",
+     "Ticket revenue / operating cost, pooled over the selected records. 1.0 = break-even. Excludes subsidies."),
+    ("co2_per_pax", "CO2 saved per passenger", "ratio",
+     "CO2 saved (kg) / passengers, pooled. Ignores trip length."),
+    ("complaint_rate", "Complaints per 10k passengers", "ratio",
+     "Accessibility complaints / passengers x 10,000, pooled."),
 ]
 
 
-# The six headline KPIs shown in the dashboard's KPI strip: one per decision
-# area (demand, finance, reliability, satisfaction, sustainability,
-# accessibility). Trips, revenue, cost and on-time % remain available in the
-# chips, tabs and goal tracking.
-HEADLINE_KPIS = ["passengers", "surplus", "delay", "rating", "co2", "complaints"]
+# The four headline KPIs in the dashboard's KPI strip, one per management decision
+# in the brief that a single number can track:
+#   delay          service reliability; rating moves with delay (Spearman -0.81, and
+#                  -0.63 to -0.72 within every mode), so rating is shown in its chip
+#   revenue_cost   investment priorities; 1.0 = break-even, comparable across filters
+#   co2_per_pax    sustainability performance; total tonnes shown in its chip
+#   complaint_rate accessibility improvements; total complaints shown in its chip
+# All four are averages or rates, so a filtered selection can be compared with the
+# network. Passenger totals depend on how many records are selected, so demand
+# (route planning) is shown in the scope line and the Demand and Cities tabs instead.
+HEADLINE_KPIS = ["delay", "revenue_cost", "co2_per_pax", "complaint_rate"]
 
 
 def compute_kpis(df: pd.DataFrame) -> dict[str, float]:
     """Headline KPIs for a (filtered) dataset. Returns NaN-safe values."""
     if df.empty:
-        return {k: np.nan for k, *_ in KPI_SPECS} | {"records": 0, "complaint_rate": np.nan,
-                                                       "revenue_cost": np.nan}
+        return {k: np.nan for k, *_ in KPI_SPECS} | {"records": 0}
     pax = float(df["Passengers"].sum())
     revenue = float(df["Ticket_Revenue_EUR"].sum())
     cost = float(df["Operating_Cost_EUR"].sum())
@@ -495,6 +514,7 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, float]:
         "complaints": complaints,
         "complaint_rate": complaints / pax * 10_000 if pax else np.nan,
         "revenue_cost": revenue / cost if cost else np.nan,
+        "co2_per_pax": float(df["CO2_Saved_KG"].sum()) / pax if pax else np.nan,  # kg
     }
 
 
@@ -514,6 +534,12 @@ def format_number(value: float, kind: str = "count") -> str:
         return f"{value:.1f}%"
     if kind == "tonnes":
         return f"{value:,.0f} t"
+    if kind == "ratio":
+        return f"{value:.3f}"
+    if kind == "kg":
+        return f"{value:.3f} kg"
+    if kind == "rate":
+        return f"{value:.1f}"
     if value >= 1e6:
         return f"{value / 1e6:,.2f}m"
     return f"{value:,.0f}"
@@ -521,32 +547,8 @@ def format_number(value: float, kind: str = "count") -> str:
 
 KPI_FORMATS = {"passengers": "count", "trips": "count", "revenue": "eur", "cost": "eur",
                "surplus": "eur", "delay": "minutes", "on_time": "percent", "co2": "tonnes",
-               "complaints": "count", "rating": "rating"}
-
-
-def kpi_delta(key: str, current: dict, baseline: dict) -> tuple[str | None, str]:
-    """Comparison text for a KPI card and its colour rule.
-
-    Sums are compared as a share of the whole network; means as a difference
-    from the network average. For delay a rise is bad, so the colour inverts.
-    """
-    cur, base = current.get(key), baseline.get(key)
-    if cur is None or base is None or np.isnan(cur) or np.isnan(base):
-        return None, "off"
-    if current["records"] == baseline["records"]:
-        return None, "off"  # no filter applied: nothing to compare against
-    if key == "delay":
-        return f"{cur - base:+.2f} min vs network", "inverse"
-    if key == "on_time":
-        return f"{cur - base:+.1f} pp vs network", "normal"
-    if key == "rating":
-        return f"{cur - base:+.2f} vs network", "normal"
-    if key == "surplus":
-        return f"network: {format_number(base, 'eur')}", "off"
-    if key == "complaints":
-        return f"{current['complaint_rate']:.1f} per 10k pax (network {baseline['complaint_rate']:.1f})", "off"
-    share = 100 * cur / base if base else np.nan
-    return f"{share:.1f}% of network", "off"
+               "complaints": "count", "rating": "rating", "revenue_cost": "ratio",
+               "co2_per_pax": "kg", "complaint_rate": "rate"}
 
 
 # Aggregations used by the charts
@@ -639,14 +641,13 @@ def insights(df: pd.DataFrame) -> dict[str, str]:
     if df.empty:
         return out
     by_mode = group_summary(df, "Transport_Mode")
-    by_city = group_summary(df, "City")
     by_weather = group_summary(df, "Weather")
     by_route = group_summary(df, "Route_Type")
 
-    if len(by_city) > 1:
-        c, v = _extreme(by_city, "City", "Mean passengers per record")
-        out["demand"] = (f"{c} has the highest demand per service in this selection "
-                         f"({v:,.0f} passengers per record on average, not adjusted for service mix).")
+    weekend = df.groupby("Is_Weekend")["Passengers"].mean()
+    if {True, False} <= set(weekend.index):
+        out["demand"] = (f"Weekend records carry {100 * (1 - weekend[True] / weekend[False]):.0f}% fewer "
+                         "passengers on average than weekday records in this selection.")
     if len(by_mode) > 1:
         m, v = _extreme(by_mode, "Transport_Mode", "Mean delay (min)")
         m2, v2 = _extreme(by_mode, "Transport_Mode", "Mean delay (min)", highest=False)
@@ -690,6 +691,31 @@ def event_uplift(df: pd.DataFrame) -> pd.DataFrame:
     out["Passenger uplift (%)"] = 100 * (out["Passengers (event)"] / out["Passengers (no event)"] - 1)
     order = [m for m in MODE_ORDER if m in out.index]
     return out.reindex(order).reset_index()
+
+
+# Demand index adjusted for service mix (same method as the report's Figure 8)
+MIX_FORMULA = ("np.log(Passengers) ~ C(Transport_Mode) + C(Route_Type) + C(Weather)"
+               " + Is_Event_Day + C(Month) + C(Weekday)")
+
+
+def adjusted_demand_index(df: pd.DataFrame, level: str = "City") -> pd.DataFrame:
+    """Observed / expected passengers for each city (or country).
+
+    'Expected' comes from a model of log(passengers) on mode, route type, weather,
+    event day, month and weekday, but not place, so it reflects each place's mix of
+    services. 1.10 means 10% more passengers than that mix predicts. Returns an
+    empty table if the model cannot be fitted (for example, too few records).
+    """
+    try:
+        model = smf.ols(MIX_FORMULA, data=df).fit()
+    except Exception:
+        return pd.DataFrame(columns=[level, "Adjusted index", "Unadjusted index"])
+    smear = np.mean(np.exp(model.resid))          # back-transform from the log scale
+    d = df.assign(Expected=np.exp(model.fittedvalues) * smear)
+    g = d.groupby(level, observed=True)
+    out = pd.DataFrame({"Adjusted index": g["Passengers"].sum() / g["Expected"].sum(),
+                        "Unadjusted index": g["Passengers"].mean() / df["Passengers"].mean()})
+    return out.sort_values("Adjusted index", ascending=False).reset_index()
 
 # =============================================================================
 # 4. PAGE
@@ -743,9 +769,9 @@ div[class*="st-key-card"] {{ background: #FFFFFF; border: 1px solid {LINE}; bord
 .scope {{ color: {MUTED}; font-size: 14px; margin: 2px 0 10px 0; }}
 
 /* KPI strip */
-.kpi-grid {{ display: grid; grid-template-columns: repeat(6, 1fr); }}
-@media (max-width: 1100px) {{ .kpi-grid {{ grid-template-columns: repeat(3, 1fr); row-gap: 14px; }}
-    .kpi:nth-child(4) {{ border-left: none; padding-left: 4px; }} }}
+.kpi-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); }}
+@media (max-width: 900px) {{ .kpi-grid {{ grid-template-columns: repeat(2, 1fr); row-gap: 14px; }}
+    .kpi:nth-child(3) {{ border-left: none; padding-left: 4px; }} }}
 .kpi {{ padding: 6px 18px 10px 18px; border-left: 1px solid {LINE}; }}
 .kpi:first-child {{ border-left: none; padding-left: 4px; }}
 .kpi-label {{ color: {MUTED}; font-size: 15px; cursor: help; }}
@@ -848,10 +874,31 @@ def load_dataset(content: bytes):
         return None, [f"The file passed the checks but could not be prepared: {exc}"], warnings
 
 
+DEFAULT_FILES = ["[5442] EcoMoveMobility.xlsx", "EcoMoveMobility.xlsx"]   # supplied dataset, same folder
+
+
+def bundled_dataset() -> dict | None:
+    """The supplied workbook stored next to this file, if it is there."""
+    for name in DEFAULT_FILES:
+        path = Path(__file__).parent / name
+        if path.exists():
+            return {"name": name, "content": path.read_bytes()}
+    return None
+
+
 def clear_dataset() -> None:
-    """Forget the current dataset and every filter that depends on it."""
+    """Forget the current dataset and every filter that depends on it, then show the upload page."""
     for key in ["upload", *FILTER_KEYS]:
         st.session_state.pop(key, None)
+    st.session_state["choose_file"] = True
+
+
+def use_bundled() -> None:
+    """Go back to the supplied dataset."""
+    for key in FILTER_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state["upload"] = bundled_dataset()
+    st.session_state["choose_file"] = False
 
 
 def upload_page() -> None:
@@ -859,10 +906,10 @@ def upload_page() -> None:
     st.markdown(BRAND, unsafe_allow_html=True)
     _, middle, _ = st.columns([1, 2.2, 1])
     with middle, st.container(key="card_upload"):
-        st.markdown("<div class='upload-title'>Upload the EcoMove dataset</div><div class='upload-sub'>"
-                    "Upload the Excel workbook (.xlsx) to open the dashboard. The file is checked first: "
-                    "the dashboard opens only if it has the columns and values the analysis is built on."
-                    "</div>", unsafe_allow_html=True)
+        st.markdown("<div class='upload-title'>Upload an EcoMove workbook</div><div class='upload-sub'>"
+                    "Upload an Excel workbook (.xlsx) with the same columns as the supplied dataset, for "
+                    "example a newer extract. The file is checked first and is used only if it has the "
+                    "columns and values the dashboard is built on.</div>", unsafe_allow_html=True)
         file = st.file_uploader("EcoMove workbook (.xlsx)", type=["xlsx"], key="uploader")
         if file is not None:
             content = file.getvalue()
@@ -877,7 +924,10 @@ def upload_page() -> None:
             else:
                 clear_dataset()
                 st.session_state["upload"] = {"name": file.name, "content": content}
+                st.session_state["choose_file"] = False
                 st.rerun()
+        if bundled_dataset() is not None:
+            st.button("Use the supplied dataset instead", on_click=use_bundled, icon=":material/undo:")
         with st.expander("What the file must contain"):
             st.caption(f"{len(COLUMN_RULES)} columns with these exact names (capital letters, spaces and "
                        f"underscores are ignored), no empty cells, and at least {MIN_ROWS} rows. "
@@ -887,6 +937,8 @@ def upload_page() -> None:
     st.stop()
 
 
+if "upload" not in st.session_state and not st.session_state.get("choose_file"):
+    st.session_state["upload"] = bundled_dataset()      # open on the supplied dataset
 upload = st.session_state.get("upload")
 if upload is None:
     upload_page()
@@ -969,6 +1021,9 @@ with right:
             for w in load_warnings:
                 st.warning(w)
             st.button("Upload a different file", on_click=clear_dataset, width="stretch", icon=":material/upload:")
+            if bundled_dataset() is not None and upload["name"] not in DEFAULT_FILES:
+                st.button("Back to the supplied dataset", on_click=use_bundled, width="stretch",
+                          icon=":material/undo:")
 
 start, end = (dates[0], dates[1]) if isinstance(dates, (tuple, list)) and len(dates) == 2 else (MIN_DATE, MAX_DATE)
 filters = FilterState(start=start, end=end, countries=countries, cities=cities, modes=modes,
@@ -978,7 +1033,8 @@ baseline = compute_kpis(data)
 kpis = compute_kpis(df)
 
 chosen = [", ".join(x) for x in (countries, cities, modes, routes, weather) if x] + ([event] if event != "All" else [])
-st.markdown(f"<div class='scope'>Showing <b>{len(df):,} of {len(data):,} records</b> · {start:%d %b %Y} – "
+st.markdown(f"<div class='scope'>Showing <b>{len(df):,} of {len(data):,} records</b> · "
+            f"{format_number(kpis['passengers'])} passengers in these records · {start:%d %b %Y} – "
             f"{end:%d %b %Y}{' · ' + esc(' · '.join(chosen)) if chosen else ' · all cities, modes and conditions'}</div>",
             unsafe_allow_html=True)
 if isinstance(dates, (tuple, list)) and len(dates) == 1:
@@ -993,40 +1049,34 @@ if len(df) < MIN_RECORDS_WARNING:
 
 
 # --------------------------------------------------------------------------- #
-# KPI strip (six headline KPIs)
+# KPI strip (four headline KPIs)
 # --------------------------------------------------------------------------- #
 def context_chip(key: str) -> tuple[str, str]:
-    """Chip under a KPI. Unfiltered: a supporting figure (so revenue/cost,
-    on-time % and per-passenger rates stay visible without extra cards).
-    Filtered: comparison with the whole network, coloured blue (better) or
-    orange (worse) only where the direction is unambiguous."""
+    """Chip under a KPI. Unfiltered: the supporting figure for that KPI (rating
+    and on-time % for delay, surplus for cost recovery, totals for the two
+    rates). Filtered: difference from the whole network, coloured blue (better)
+    or orange (worse)."""
     if kpis["records"] == baseline["records"]:
-        pax = kpis["passengers"]
         return {
-            "passengers": f"{kpis['trips']:,.0f} trips",
-            "surplus": f"cost recovery {kpis['revenue_cost']:.3f}",
-            "delay": f"on-time {kpis['on_time']:.1f}%",
-            "rating": f"median {df['Customer_Rating'].median():.1f}",
-            "co2": f"{kpis['co2'] * 1000 / pax:.3f} kg per passenger",
-            "complaints": f"{kpis['complaint_rate']:.1f} per 10k passengers",
+            "delay": f"on-time {kpis['on_time']:.1f}% · rating {kpis['rating']:.2f}",
+            "revenue_cost": f"operating surplus {format_number(kpis['surplus'], 'eur')}",
+            "co2_per_pax": f"{kpis['co2']:,.0f} t saved in total",
+            "complaint_rate": f"{kpis['complaints']:,.0f} complaints in total",
         }[key], "neutral"
 
-    def signed(diff: float, text: str, higher_is_better: bool, decimals: int = 2) -> tuple[str, str]:
+    def signed(diff: float, text: str, higher_is_better: bool, decimals: int) -> tuple[str, str]:
         if round(diff, decimals) == 0:  # no visible difference: no arrow, no colour
             return "same as network", "neutral"
         good = diff > 0 if higher_is_better else diff < 0
         return f"{'▲' if diff > 0 else '▼'} {text}", ("good" if good else "bad")
 
-    if key == "surplus":
-        diff = kpis["revenue_cost"] - baseline["revenue_cost"]
-        return signed(diff, f"cost recovery {diff:+.3f}", True, 3)
-    if key == "complaints":
-        diff = kpis["complaint_rate"] - baseline["complaint_rate"]
-        return signed(diff, f"{kpis['complaint_rate']:.1f} vs {baseline['complaint_rate']:.1f} per 10k", False, 1)
-    text, _ = kpi_delta(key, kpis, baseline)
-    if key in ("delay", "rating"):
-        return signed(kpis[key] - baseline[key], text, key == "rating")
-    return text or "", "neutral"
+    diff = kpis[key] - baseline[key]
+    return {
+        "delay": lambda: signed(diff, f"{diff:+.2f} min vs network", False, 2),
+        "revenue_cost": lambda: signed(diff, f"{diff:+.3f} vs network", True, 3),
+        "co2_per_pax": lambda: signed(diff, f"{diff:+.3f} kg vs network", True, 3),
+        "complaint_rate": lambda: signed(diff, f"{diff:+.1f} vs network", False, 1),
+    }[key]()
 
 
 SPECS = {k: (k, label, kind, help_text) for k, label, kind, help_text in KPI_SPECS}
@@ -1041,9 +1091,27 @@ with st.container(key="card_kpis"):
                      f"<div class='kpi-value'>{esc(value)}</div><span class='chip {cls}'>{esc(chip)}</span></div>")
     st.markdown(f"<div class='kpi-grid'>{''.join(cells)}</div>", unsafe_allow_html=True)
 
+@st.cache_data(show_spinner=False)
+def cached_index(content: bytes, level: str) -> pd.DataFrame:
+    """Adjusted demand index on all records of the loaded file (does not change with filters)."""
+    full, _, _ = load_dataset(content)
+    return adjusted_demand_index(full, level)
+
+
 insight = insights(df)
 by_mode = group_summary(df, "Transport_Mode")
 by_city = group_summary(df, "City")
+by_country = group_summary(df, "Country")
+city_idx = cached_index(upload["content"], "City")
+country_idx = cached_index(upload["content"], "Country")
+shown_idx = city_idx[city_idx["City"].astype(str).isin(set(df["City"].astype(str)))]
+if len(shown_idx) > 1:
+    top, bottom = shown_idx.iloc[0], shown_idx.iloc[-1]
+    def more_or_fewer(index: float) -> str:
+        return f"{abs(100 * (index - 1)):.0f}% {'more' if index >= 1 else 'fewer'}"
+    insight["cities"] = (f"After allowing for service mix, {top['City']} carries {more_or_fewer(top['Adjusted index'])} "
+                         f"passengers than expected and {bottom['City']} {more_or_fewer(bottom['Adjusted index'])} "
+                         "(all records).")
 modes_present = [m for m in MODE_ORDER if m in set(by_mode["Transport_Mode"])]
 
 
@@ -1262,10 +1330,38 @@ with tabs[1]:
 
 # ============================ CITIES & MODES ============================== #
 with tabs[2]:
-    insight_box(insight.get("demand"))
+    insight_box(insight.get("cities"))
     c1, c2 = st.columns([3, 2])
-    with c1, st.container(key="card_city_mode"):
-        card_header("Passengers by city and mode", "Total passengers in the selection")
+    with c1, st.container(key="card_city_index"):
+        card_header("City demand adjusted for service mix",
+                    "Passengers compared with what each city's mix of modes, routes and conditions predicts "
+                    "(1.0 = as expected); hollow dot = raw average")
+        if shown_idx.empty:
+            st.caption("The adjusted index could not be calculated for this file.")
+        else:
+            si = shown_idx.sort_values("Adjusted index")
+            names = si["City"].astype(str)
+            fig = go.Figure()
+            fig.add_scatter(x=si["Unadjusted index"], y=names, mode="markers", name="Raw average (not adjusted)",
+                            marker=dict(size=10, color="white", line=dict(color=MUTED, width=1.5)),
+                            hovertemplate="%{y}<br>Raw index: %{x:.2f}<extra></extra>")
+            fig.add_scatter(x=si["Adjusted index"], y=names, mode="markers", name="Adjusted for service mix",
+                            marker=dict(size=12, color=GOOD),
+                            hovertemplate="%{y}<br>Adjusted index: %{x:.2f}<extra></extra>")
+            fig.add_scatter(x=np.maximum(si["Adjusted index"], si["Unadjusted index"]) + 0.015, y=names,
+                            mode="text", text=[f"{100 * (v - 1):+.0f}%" for v in si["Adjusted index"]],
+                            textposition="middle right", showlegend=False, hoverinfo="skip",
+                            textfont=dict(color=INK, size=12))
+            fig.add_vline(x=1, line_color=INK, line_width=1)
+            fig.update_xaxes(showgrid=True, gridcolor="#F0F1F4", title="Demand index")
+            show(style(fig, max(260, 70 + 30 * len(si)), legend=True))
+            st.caption("Calculated once on all records, so the filters only choose which cities are shown.")
+    with c2, st.container(key="card_mode_mean"):
+        card_header("Demand per service", "Mean passengers per record by mode")
+        show(mode_hbar(by_mode, "Mean passengers per record", "Mean passengers per record", ",.0f"))
+    c3, c4 = st.columns([3, 2])
+    with c3, st.container(key="card_city_mode"):
+        card_header("Passengers by city and mode", "Total passengers in the selected records")
         t = df.groupby(["City", "Transport_Mode"], observed=True)["Passengers"].sum().reset_index()
         order = t.groupby("City", observed=True)["Passengers"].sum().sort_values().index.tolist()
         fig = px.bar(t, y="City", x="Passengers", color="Transport_Mode", orientation="h",
@@ -1275,21 +1371,36 @@ with tabs[2]:
                           hovertemplate="%{y}<br>%{fullData.name}: %{x:,.0f}<extra></extra>")
         fig.update_xaxes(showgrid=True, gridcolor="#F0F1F4", tickformat="~s")
         show(style(fig, 440, legend=True))
-    with c2, st.container(key="card_mode_mean"):
-        card_header("Demand per service", "Mean passengers per record by mode")
-        show(mode_hbar(by_mode, "Mean passengers per record", "Mean passengers per record", ",.0f"))
-    with st.container(key="card_city_table"):
-        card_header("City scorecard", "Raw city averages are not adjusted for each city's mix of modes "
-                                      "and routes (the report's city demand index gives the adjusted figures)")
-        st.dataframe(by_city.sort_values("Passengers", ascending=False), hide_index=True,
-                     height=38 + 35 * len(by_city),
-                     column_order=["City", "Records", "Passengers", "Mean passengers per record", "Mean delay (min)",
-                                   "On-time (%)", "Mean rating", "Revenue / cost", "Complaints per 10k pax",
-                                   "CO2 per passenger (kg)"],
+    with c4, st.container(key="card_country_table"):
+        card_header("Countries", "Adjusted demand index (all records) and service measures for the selection")
+        ct = by_country.merge(country_idx[["Country", "Adjusted index"]].astype({"Country": str}),
+                              on="Country", how="left") if not country_idx.empty else by_country
+        st.dataframe(ct.sort_values("Adjusted index" if "Adjusted index" in ct else "Records", ascending=False),
+                     hide_index=True, height=38 + 35 * len(ct),
+                     column_order=["Country", "Adjusted index", "Mean delay (min)", "Mean rating",
+                                   "Complaints per 10k pax"],
                      column_config={
-                         "Passengers": st.column_config.NumberColumn(format="localized"),
+                         "Adjusted index": st.column_config.NumberColumn("Demand index", format="%.2f"),
+                         "Mean delay (min)": st.column_config.NumberColumn("Delay (min)", format="%.2f"),
+                         "Mean rating": st.column_config.NumberColumn("Rating", format="%.2f"),
+                         "Revenue / cost": st.column_config.NumberColumn(format="%.3f"),
+                         "Complaints per 10k pax": st.column_config.NumberColumn("Complaints /10k", format="%.1f")})
+        st.caption("Service measures differ little between countries; demand differs more.")
+    with st.container(key="card_city_table"):
+        card_header("City scorecard", "Demand index adjusted for service mix (all records) beside raw averages "
+                                      "for the selected records")
+        cs = by_city.astype({"City": str}).merge(city_idx[["City", "Adjusted index"]].astype({"City": str}),
+                                                 on="City", how="left")
+        st.dataframe(cs.sort_values("Adjusted index", ascending=False), hide_index=True,
+                     height=38 + 35 * len(cs),
+                     column_order=["City", "Records", "Adjusted index", "Mean passengers per record",
+                                   "Mean delay (min)", "On-time (%)", "Mean rating", "Revenue / cost",
+                                   "Complaints per 10k pax", "CO2 per passenger (kg)"],
+                     column_config={
+                         "Adjusted index": st.column_config.NumberColumn("Demand index (adjusted)", format="%.2f"),
                          "Mean passengers per record": st.column_config.ProgressColumn(
-                             format="%.0f", min_value=0, max_value=float(by_city["Mean passengers per record"].max())),
+                             "Mean passengers per record (raw)", format="%.0f", min_value=0,
+                             max_value=float(cs["Mean passengers per record"].max())),
                          "Mean delay (min)": st.column_config.NumberColumn(format="%.2f"),
                          "On-time (%)": st.column_config.NumberColumn(format="%.1f"),
                          "Mean rating": st.column_config.NumberColumn(format="%.2f"),
@@ -1461,14 +1572,18 @@ with tabs[8]:
         card_header("Data notes and limitations")
         st.markdown(
             f"- {len(data):,} service records, {MIN_DATE:%b %Y} – {MAX_DATE:%b %Y}, {data['City'].nunique()} cities in "
-            f"{data['Country'].nunique()} countries. The file was checked on upload (complete, valid values); "
+            f"{data['Country'].nunique()} countries. The file was checked when loaded (complete, valid values); "
             "no records removed.\n"
-            "- **Sample, not census:** totals describe the sample; trends use averages per record.\n"
-            "- **'Trips'** means rentals for Bike Share / E-Scooter and vehicle journeys for other modes.\n"
-            "- **Weather** shows no seasonality in the assessment dataset (snow appears in summer), which "
-            "suggests simulated data.\n"
+            "- **Records, not a full count:** totals add up the selected records and change with how many "
+            "records there are; trends therefore use the average per record.\n"
+            "- **'Trips'** always equals Passengers for Bike Share / E-Scooter, so it appears to mean rentals "
+            "there and vehicle journeys for other modes; it is not compared across modes.\n"
+            "- **Weather** labels do not follow the seasons (snow in summer, heatwaves in winter), so weather "
+            "results describe this dataset only.\n"
+            "- **City demand index** is adjusted for each city's mix of modes, routes and conditions; other "
+            "city figures are raw averages.\n"
             "- **Associations, not causes:** group differences may reflect other factors, especially mode.\n"
-            "- Revenue excludes subsidies; goal-tracking targets are illustrative.")
+            "- Revenue is ticket income only (no subsidies); goal-tracking targets are illustrative.")
     with st.container(key="card_records"):
         card_header("Filtered records", f"{len(df):,} records")
         cols = ["Record_ID", "Date", "City", "Country", "Transport_Mode", "Route_Type", "Weather",
